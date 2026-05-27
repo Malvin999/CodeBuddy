@@ -924,6 +924,22 @@ static uint8_t pctFromCap(uint32_t value, uint32_t cap) {
   return (uint8_t)(pct > 100 ? 100 : pct);
 }
 
+static uint8_t batteryPercent() {
+  int pct = (compatBatteryVoltageMv() - 3200) / 10;
+  if (pct < 0) pct = 0;
+  if (pct > 100) pct = 100;
+  return (uint8_t)pct;
+}
+
+static void drawBatteryPercent(const Palette& p) {
+  char label[6];
+  snprintf(label, sizeof(label), "%u%%", batteryPercent());
+  spr.setTextSize(1);
+  spr.setTextColor(_onUsb ? USAGE_LIME : p.textDim, p.bg);
+  spr.setCursor(W - (int)strlen(label) * 6 - 5, 5);
+  spr.print(label);
+}
+
 static void formatCompactNumber(char* out, size_t size, uint32_t value) {
   if (value >= 1000000) {
     snprintf(out, size, "%lu.%luM", (unsigned long)(value / 1000000), (unsigned long)((value / 100000) % 10));
@@ -972,10 +988,7 @@ static void drawUsagePanel() {
   spr.setTextColor(p.text, p.bg);
   spr.setCursor(SIDE_TEXT_X, 5);
   spr.print("CODEX USAGE");
-  bool live = tama.usageQuota ? tama.usageLive : dataConnected();
-  spr.setTextColor(live ? USAGE_LIME : p.textDim, p.bg);
-  spr.setCursor(W - 30, 5);
-  spr.print(live ? "LIVE" : "IDLE");
+  drawBatteryPercent(p);
 
   uint8_t shortPct = tama.usageQuota ? tama.usageShortPct : pctFromCap(tama.tokensToday, 100000);
   uint8_t longPct = tama.usageQuota
@@ -1164,9 +1177,7 @@ static void drawSessionPanel() {
   spr.setTextColor(p.text, p.bg);
   spr.setCursor(SIDE_TEXT_X, 5);
   spr.print("CODEX SESSIONS");
-  spr.setTextColor(dataConnected() ? USAGE_LIME : p.textDim, p.bg);
-  spr.setCursor(W - 30, 5);
-  spr.print(dataConnected() ? "LIVE" : "IDLE");
+  drawBatteryPercent(p);
 
   uint8_t visibleIdx = 0;
   uint8_t visibleTotal = visibleSessionCount();
