@@ -55,6 +55,31 @@ def _message(ts: float, role: str, text: str):
     }
 
 
+def _function_call(ts: float, call_id: str, arguments: dict):
+    return {
+        "timestamp": _iso(ts),
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "name": "exec_command",
+            "arguments": json.dumps(arguments),
+            "call_id": call_id,
+        },
+    }
+
+
+def _function_call_output(ts: float, call_id: str, output: str = ""):
+    return {
+        "timestamp": _iso(ts),
+        "type": "response_item",
+        "payload": {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": output,
+        },
+    }
+
+
 def test_parse_session_log_returns_running_record_with_latest_entries_and_tokens(tmp_path: Path):
     log_path = tmp_path / "sessions" / "running.jsonl"
     _write_log(
@@ -186,6 +211,59 @@ def test_parse_session_log_treats_same_second_restart_as_running(tmp_path: Path)
     assert session is not None
     assert session.state == "running"
     assert session.latest_message == "Second turn is running."
+
+
+def test_parse_session_log_marks_pending_escalated_tool_call_as_waiting(tmp_path: Path):
+    log_path = tmp_path / "sessions" / "pending-approval.jsonl"
+    _write_log(
+        log_path,
+        [
+            _session_meta(session_id="session-waiting"),
+            _event(3_000.0, "task_started", turn_id="turn-1", started_at=3_000.0),
+            _function_call(
+                3_005.0,
+                "call-1",
+                {
+                    "cmd": "git push origin main",
+                    "sandbox_permissions": "require_escalated",
+                    "justification": "Push changes",
+                },
+            ),
+        ],
+    )
+
+    session = parse_session_log(log_path, now=3_030.0)
+
+    assert session is not None
+    assert session.state == "waiting"
+
+
+def test_parse_session_log_clears_waiting_after_escalated_tool_call_output(tmp_path: Path):
+    log_path = tmp_path / "sessions" / "approved-running.jsonl"
+    _write_log(
+        log_path,
+        [
+            _session_meta(session_id="session-approved"),
+            _event(3_000.0, "task_started", turn_id="turn-1", started_at=3_000.0),
+            _function_call(
+                3_005.0,
+                "call-1",
+                {
+                    "cmd": "git push origin main",
+                    "sandbox_permissions": "require_escalated",
+                    "justification": "Push changes",
+                },
+            ),
+            _function_call_output(3_010.0, "call-1", "ok"),
+            _event(3_012.0, "agent_message", message="Continuing work"),
+        ],
+    )
+
+    session = parse_session_log(log_path, now=3_030.0)
+
+    assert session is not None
+    assert session.state == "running"
+    assert session.latest_message == "Continuing work"
 
 
 def test_session_log_watcher_poll_rescans_recursively_and_honors_max_files(tmp_path: Path):

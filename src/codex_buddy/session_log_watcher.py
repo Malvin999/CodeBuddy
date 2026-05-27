@@ -40,6 +40,7 @@ def parse_session_log(
     title = ""
     entries: list[str] = []
     last_entry_value: Optional[str] = None
+    pending_escalated_calls: set[str] = set()
     tokens_total = 0
     tokens_session = 0
 
@@ -118,7 +119,20 @@ def parse_session_log(
                     continue
                 continue
 
-            if payload.get("type") != "message":
+            item_type = payload.get("type")
+            if item_type == "function_call":
+                call_id = str(payload.get("call_id") or "")
+                if call_id and _is_escalated_function_call(payload):
+                    pending_escalated_calls.add(call_id)
+                last_activity_at = _max_timestamp(last_activity_at, record_ts)
+                continue
+            if item_type == "function_call_output":
+                call_id = str(payload.get("call_id") or "")
+                if call_id:
+                    pending_escalated_calls.discard(call_id)
+                last_activity_at = _max_timestamp(last_activity_at, record_ts)
+                continue
+            if item_type != "message":
                 continue
             role = str(payload.get("role") or "")
             if role not in {"assistant", "user"}:
@@ -145,7 +159,11 @@ def parse_session_log(
     in_flight = last_started_at is not None and (
         last_completed_at is None or last_started_at > last_completed_at
     )
-    if in_flight:
+    if pending_escalated_calls:
+        if age > active_window_seconds:
+            return None
+        state = "waiting"
+    elif in_flight:
         if age > active_window_seconds:
             return None
         state = "running"
@@ -282,6 +300,32 @@ def _normalize_source(value: Any) -> str:
         keys = sorted(str(key) for key in value.keys())
         return ",".join(keys)
     return ""
+
+
+def _is_escalated_function_call(payload: dict[str, Any]) -> bool:
+    arguments = payload.get("arguments")
+    if not isinstance(arguments, str):
+        return False
+    if "require_escalated" not in arguments:
+        return False
+    try:
+        data = json.loads(arguments)
+    except json.JSONDecodeError:
+        return "sandbox_permissions" in arguments
+    return _contains_escalation(data)
+
+
+def _contains_escalation(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "sandbox_permissions" and item == "require_escalated":
+                return True
+            if _contains_escalation(item):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_contains_escalation(item) for item in value)
+    return False
 
 
 def _load_thread_titles(path: Path, session_ids: list[str]) -> dict[str, str]:
