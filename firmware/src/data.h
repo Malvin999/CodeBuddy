@@ -9,8 +9,22 @@ struct TamaState {
   uint8_t  sessionsTotal;
   uint8_t  sessionsRunning;
   uint8_t  sessionsWaiting;
+  uint8_t  sessionCount;
+  struct {
+    char id[16];
+    char name[64];
+    char state[12];
+  } sessions[3];
   bool     recentlyCompleted;
   uint32_t tokensToday;
+  bool     usageLive;
+  bool     usageQuota;
+  uint8_t  usageShortPct;
+  uint8_t  usageLongPct;
+  char     usageShortWindow[8];
+  char     usageLongWindow[8];
+  char     usageShortReset[24];
+  char     usageLongReset[24];
   uint32_t lastUpdated;
   char     msg[128];
   bool     connected;
@@ -110,6 +124,49 @@ static void _applyJson(const char* line, TamaState* out) {
   uint32_t bridgeTokens = doc["tokens"] | 0;
   if (doc["tokens"].is<uint32_t>()) statsOnBridgeTokens(bridgeTokens);
   out->tokensToday = doc["tokens_today"] | out->tokensToday;
+  JsonObject usage = doc["usage"];
+  if (!usage.isNull()) {
+    int shortPct = usage["short_pct"] | 0;
+    int longPct = usage["long_pct"] | 0;
+    if (shortPct < 0) shortPct = 0;
+    if (shortPct > 100) shortPct = 100;
+    if (longPct < 0) longPct = 0;
+    if (longPct > 100) longPct = 100;
+    out->usageQuota = true;
+    out->usageLive = usage["live"] | true;
+    out->usageShortPct = (uint8_t)shortPct;
+    out->usageLongPct = (uint8_t)longPct;
+    const char* shortWindow = usage["short_window"] | "5h";
+    const char* longWindow = usage["long_window"] | "7d";
+    const char* shortReset = usage["short_reset"] | "";
+    const char* longReset = usage["long_reset"] | "";
+    strncpy(out->usageShortWindow, shortWindow, sizeof(out->usageShortWindow) - 1);
+    strncpy(out->usageLongWindow, longWindow, sizeof(out->usageLongWindow) - 1);
+    strncpy(out->usageShortReset, shortReset, sizeof(out->usageShortReset) - 1);
+    strncpy(out->usageLongReset, longReset, sizeof(out->usageLongReset) - 1);
+    out->usageShortWindow[sizeof(out->usageShortWindow) - 1] = 0;
+    out->usageLongWindow[sizeof(out->usageLongWindow) - 1] = 0;
+    out->usageShortReset[sizeof(out->usageShortReset) - 1] = 0;
+    out->usageLongReset[sizeof(out->usageLongReset) - 1] = 0;
+  }
+  JsonArray sessions = doc["sessions"];
+  if (!sessions.isNull()) {
+    out->sessionCount = 0;
+    for (JsonVariant v : sessions) {
+      if (out->sessionCount >= 3) break;
+      JsonObject session = v.as<JsonObject>();
+      if (session.isNull()) continue;
+      const char* id = session["id"] | "";
+      const char* name = session["name"] | "";
+      const char* state = session["state"] | "done";
+      strncpy(out->sessions[out->sessionCount].id, id, sizeof(out->sessions[out->sessionCount].id) - 1);
+      out->sessions[out->sessionCount].id[sizeof(out->sessions[out->sessionCount].id) - 1] = 0;
+      utf8CopyTruncate(out->sessions[out->sessionCount].name, name);
+      strncpy(out->sessions[out->sessionCount].state, state, sizeof(out->sessions[out->sessionCount].state) - 1);
+      out->sessions[out->sessionCount].state[sizeof(out->sessions[out->sessionCount].state) - 1] = 0;
+      out->sessionCount++;
+    }
+  }
   const char* m = doc["msg"];
   if (m) utf8CopyTruncate(out->msg, m);
   JsonArray la = doc["entries"];
@@ -198,6 +255,7 @@ inline void dataPoll(TamaState* out) {
   out->connected = dataConnected();
   if (!out->connected) {
     out->sessionsTotal=0; out->sessionsRunning=0; out->sessionsWaiting=0;
+    out->sessionCount=0;
     out->recentlyCompleted=false; out->lastUpdated=now;
     utf8CopyTruncate(out->msg, "No Codex connected");
   }

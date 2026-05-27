@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Optional
 
 from .reducer import BuddySnapshot
@@ -34,6 +35,7 @@ class SessionRecord:
     tokens_session: int
     control_capability: str
     pending_prompt: Optional[SessionPrompt] = None
+    title: str = ""
 
     def as_dict(self) -> dict[str, object]:
         data = asdict(self)
@@ -96,6 +98,7 @@ class SessionCatalog:
             tokens_session=session.tokens_session,
             control_capability=session.control_capability,
             pending_prompt=None,
+            title=session.title,
         )
 
     def session_for_request(self, request_id: str) -> Optional[str]:
@@ -151,6 +154,7 @@ class SessionCatalog:
             tokens=sum(max(0, session.tokens_total) for session in visible),
             tokens_today=sum(max(0, session.tokens_session) for session in visible),
             prompt=prompt,
+            sessions=_compact_sessions(visible[:3]),
         )
 
     def _visible_sessions(self, now: float) -> list[SessionRecord]:
@@ -160,7 +164,7 @@ class SessionCatalog:
             if session.state in {"running", "waiting"}:
                 visible.append(session)
                 continue
-            if session.state == "recent" and age <= self.active_window_seconds:
+            if session.state == "recent" and age <= self.completed_window_seconds:
                 visible.append(session)
                 continue
             if session.state == "completed" and age <= self.completed_window_seconds:
@@ -184,3 +188,35 @@ class SessionCatalog:
         stale = [request_id for request_id, mapped_session in self._request_to_session.items() if mapped_session == session_id]
         for request_id in stale:
             self._request_to_session.pop(request_id, None)
+
+
+def _session_title(session: SessionRecord) -> str:
+    title = (session.title or "").strip()
+    if not title and session.cwd:
+        title = Path(session.cwd).name
+    if not title:
+        title = session.originator or session.source or "Codex"
+    return clip_text(title, 28)
+
+
+def _compact_state(state: str) -> str:
+    if state == "waiting":
+        return "waiting"
+    if state == "running":
+        return "running"
+    return "done"
+
+
+def _compact_session_id(session: SessionRecord) -> str:
+    return session.session_id[-12:] if len(session.session_id) > 12 else session.session_id
+
+
+def _compact_sessions(sessions: list[SessionRecord]) -> list[dict[str, str]]:
+    return [
+        {
+            "id": _compact_session_id(session),
+            "name": _session_title(session),
+            "state": _compact_state(session.state),
+        }
+        for session in sessions
+    ]

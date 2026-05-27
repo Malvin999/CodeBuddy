@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Dict, Optional
+from typing import Any, Deque, Dict, Optional
 
 from .events import ApprovalRequest, AgentOutput, TokenUsage, TurnState
 from .text_width import clip_text_by_width
@@ -32,6 +32,8 @@ class BuddySnapshot:
     tokens: int
     tokens_today: int
     prompt: Optional[dict[str, str]]
+    usage: Optional[dict[str, Any]] = None
+    sessions: Optional[list[dict[str, str]]] = None
 
     def as_ble_payload(self) -> dict:
         payload = {
@@ -42,7 +44,10 @@ class BuddySnapshot:
             "entries": self.entries,
             "tokens": self.tokens,
             "tokens_today": self.tokens_today,
+            "sessions": list(self.sessions or []),
         }
+        if self.usage is not None:
+            payload["usage"] = dict(self.usage)
         if self.prompt is not None:
             payload["prompt"] = dict(self.prompt)
 

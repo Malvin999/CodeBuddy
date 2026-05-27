@@ -4,7 +4,6 @@
 #include "ble_bridge.h"
 #include "about_info.h"
 #include "clock_display_logic.h"
-#include "clock_orient_logic.h"
 #include "clock_time_logic.h"
 #include "data.h"
 #include "persona_logic.h"
@@ -26,14 +25,21 @@ static void startBt() {
 
 #include "character.h"
 #include "stats.h"
-const int W = 135, H = 240;
-const int CX = W / 2;
-const int CY_BASE = 120;
+const int W = 240, H = 135;
+const uint8_t DISPLAY_ROTATION = 1;
+const int SIDE_X = 96;
+const int SIDE_W = W - SIDE_X;
+const int SIDE_PAD = 4;
+const int SIDE_TEXT_X = SIDE_X + SIDE_PAD;
+const int SIDE_TEXT_CELLS = 22;
+const int LEFT_CLOCK_Y = 76;
 const int LED_PIN = 10;          // red LED, active-low
 
 // Colors used across multiple UI surfaces
 const uint16_t HOT   = 0xFA20;   // red-orange: warnings, impatience, deny
 const uint16_t PANEL = 0x2104;   // overlay panel background
+const uint16_t USAGE_BLUE = 0x3D7F;
+const uint16_t USAGE_LIME = 0xBFE0;
 // Keep the minimal validation surface available for future bring-up, but run
 // the normal UI path by default now that approval rendering is fixed.
 static const bool VALIDATION_UI = false;
@@ -63,6 +69,14 @@ uint8_t msgScroll = 0;
 uint16_t lastLineGen = 0;
 uint32_t hudScrollStartedMs = 0;
 char     lastPromptId[40] = "";
+char     dismissedDoneSessionIds[8][16] = {};
+uint8_t  dismissedDoneSessionNext = 0;
+struct SessionStateMemo {
+  char id[16];
+  char state[12];
+};
+SessionStateMemo lastSessionStates[3] = {};
+bool     lastSessionStatesReady = false;
 uint32_t lastInteractMs = 0;
 bool     dimmed = false;
 bool     screenOff = false;
@@ -103,6 +117,7 @@ static bool isFaceDown() {
   return az < -0.7f && fabsf(ax) < 0.4f && fabsf(ay) < 0.4f;
 }
 
+static uint8_t displayRotation() { return settings().clockRot == 1 ? 3 : DISPLAY_ROTATION; }
 static void applyBrightness() { compatSetBrightnessPercent(20 + brightLevel * 20); }
 
 static void wake() {
@@ -160,7 +175,7 @@ const uint8_t INFO_PG_BUTTONS = 1;
 const uint8_t INFO_PG_CREDITS = 5;
 
 void applyDisplayMode() {
-  bool peek = displayMode != DISP_NORMAL;
+  bool peek = (W > H) || displayMode != DISP_NORMAL;
   characterSetPeek(peek);
   buddySetPeek(peek);
   // Clear the whole sprite on mode switch. drawInfo/drawPet clear their
@@ -176,7 +191,7 @@ const uint8_t MENU_N = 6;
 
 bool    settingsOpen = false;
 uint8_t settingsSel  = 0;
-const char* settingsItems[] = { "brightness", "sound", "bluetooth", "wifi", "led", "transcript", "clock rot", "ascii pet", "reset", "back" };
+const char* settingsItems[] = { "brightness", "sound", "bluetooth", "wifi", "led", "transcript", "rotation", "ascii pet", "reset", "back" };
 const uint8_t SETTINGS_N = 10;
 
 bool    resetOpen = false;
@@ -204,12 +219,16 @@ static void applySetting(uint8_t idx) {
     case 3: s.wifi = !s.wifi; break;   // stored only — no WiFi stack linked
     case 4: s.led = !s.led; break;
     case 5: s.hud = !s.hud; break;
-    case 6: s.clockRot = (s.clockRot + 1) % 3; break;
+    case 6: s.clockRot = (s.clockRot + 1) % 2; break;
     case 7: nextPet(); return;
     case 8: resetOpen = true; resetSel = 0; resetConfirmIdx = 0xFF; return;
     case 9: settingsOpen = false; characterInvalidate(); return;
   }
   settingsSave();
+  if (idx == 6) {
+    M5.Lcd.setRotation(displayRotation());
+    applyDisplayMode();
+  }
 }
 
 // Tap-twice confirm: first tap arms (label flips to "really?"), second
@@ -287,7 +306,9 @@ static void drawMenuHints(const Palette& p, int mx, int mw, int hy,
 
 static void drawSettings() {
   const Palette& p = characterPalette();
-  int mw = 118, mh = 16 + SETTINGS_N * 14 + MENU_HINT_H;
+  int rowH = H < 180 ? 10 : 14;
+  int mw = W > H ? 196 : 118;
+  int mh = 16 + SETTINGS_N * rowH + MENU_HINT_H;
   int mx = (W - mw) / 2, my = (H - mh) / 2;
   spr.fillRoundRect(mx, my, mw, mh, 4, PANEL);
   spr.drawRoundRect(mx, my, mw, mh, 4, p.textDim);
@@ -297,10 +318,10 @@ static void drawSettings() {
   for (int i = 0; i < SETTINGS_N; i++) {
     bool sel = (i == settingsSel);
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
-    spr.setCursor(mx + 6, my + 8 + i * 14);
+    spr.setCursor(mx + 6, my + 8 + i * rowH);
     spr.print(sel ? "> " : "  ");
     spr.print(settingsItems[i]);
-    spr.setCursor(mx + mw - 36, my + 8 + i * 14);
+    spr.setCursor(mx + mw - 42, my + 8 + i * rowH);
     spr.setTextColor(p.textDim, PANEL);
     if (i == 0) {
       spr.printf("%u/4", brightLevel);
@@ -308,7 +329,7 @@ static void drawSettings() {
       spr.setTextColor(vals[i-1] ? GREEN : p.textDim, PANEL);
       spr.print(vals[i-1] ? " on" : "off");
     } else if (i == 6) {
-      static const char* const RN[] = { "auto", "port", "land" };
+      static const char* const RN[] = { "btnA", "usb" };
       spr.print(RN[s.clockRot]);
     } else if (i == 7) {
       uint8_t total = buddySpeciesCount() + (gifAvailable ? 1 : 0);
@@ -374,23 +395,10 @@ void drawMenu() {
   drawMenuHints(p, mx, mw, my + mh - 12);
 }
 
-// Clock orientation: gravity along the in-plane X axis means the stick is
-// on its side. On the real StickS3 mount used here, that is the IMU Y axis,
-// not X. Signed counter for hysteresis on both transitions — same
-// pattern as face-down nap.
-//   0 = portrait (sprite path, pet sleeps underneath)
-//   1 = landscape, BtnA-side down (M5.Lcd rotation 1)
-//   3 = landscape, USB-side down (M5.Lcd rotation 3)
-static uint8_t clockOrient   = 0;
-static int8_t  orientFrames  = 0;
-static int8_t  clockSwapFrames = 0;
-static uint8_t paintedOrient = 0;
 static bool    _clockHostTimeValid = false;
 static int64_t _clockHostLocalEpoch = 0;
 static uint32_t _clockHostSyncMs = 0;
-// RTC and IMU share an I2C bus. Reading the RTC at 60fps starves the IMU
-// reads in clockUpdateOrient — orientation detection gets noisy. Cache the
-// time once per second; mood logic and drawClock both read from here.
+// Cache the time once per second; mood logic and drawClock both read from here.
 static RTC_TimeTypeDef _clkTm;
 static RTC_DateTypeDef _clkDt;
 uint32_t               _clkLastRead = 0;   // zeroed by data.h on time-sync
@@ -426,87 +434,54 @@ static void clockRefreshRtc() {
   M5.Rtc.GetDate(&_clkDt);
 }
 
-static void clockUpdateOrient() {
-  float ax, ay, az;
-  M5.Imu.getAccelData(&ax, &ay, &az);
-  clockOrientUpdateForStickS3(
-    &clockOrient,
-    &orientFrames,
-    &clockSwapFrames,
-    ax,
-    ay,
-    az,
-    settings().clockRot
-  );
-}
-
 static uint8_t clockDow() { return _clkDt.WeekDay % 7; }
 static void drawClock() {
   const Palette& p = characterPalette();
   char hm[6]; clockFormatHm(hm, sizeof(hm), _clkTm.Hours, _clkTm.Minutes);
   char ss[4]; clockFormatSeconds(ss, sizeof(ss), _clkTm.Seconds);
-  char dl[8]; clockFormatDateLine(dl, sizeof(dl), _clkDt.Month, _clkDt.Date);
+  char wdl[16]; clockFormatWeekDateLine(wdl, sizeof(wdl), clockDow(), _clkDt.Month, _clkDt.Date);
 
-  if (clockOrient == 0) {
-    paintedOrient = 0;
-    // Bottom half — buddy naturally lives at y=0..82, GIF peeks at top
-    // via peek mode. Clearing from 90 leaves both untouched.
-    spr.fillRect(0, 90, W, H - 90, p.bg);
-    spr.setTextDatum(MC_DATUM);
-    spr.setTextSize(4); spr.setTextColor(p.text, p.bg);    spr.drawString(hm, CX, 140);
-    spr.setTextSize(2); spr.setTextColor(p.textDim, p.bg); spr.drawString(ss, CX, 175);
-    spr.setTextSize(1);                                     spr.drawString(dl, CX, 200);
-    spr.setTextDatum(TL_DATUM);
-    return;
+  spr.fillRect(SIDE_X, 0, SIDE_W, H, p.bg);
+  spr.drawFastVLine(SIDE_X, 8, H - 16, p.textDim);
+  spr.setTextDatum(MC_DATUM);
+  spr.setTextSize(3);
+  spr.setTextColor(p.text, p.bg);
+  spr.drawString(hm, SIDE_X + SIDE_W / 2, 38);
+  spr.setTextSize(2);
+  spr.setTextColor(p.textDim, p.bg);
+  spr.drawString(ss, SIDE_X + SIDE_W / 2, 68);
+  spr.drawString(wdl, SIDE_X + SIDE_W / 2, 96);
+  spr.setTextSize(1);
+  spr.setTextColor(p.body, p.bg);
+  spr.drawString("charging", SIDE_X + SIDE_W / 2, 120);
+  spr.setTextDatum(TL_DATUM);
+}
+
+static void drawLeftClockPanel() {
+  const Palette& p = characterPalette();
+  char hm[6]; clockFormatHm(hm, sizeof(hm), _clkTm.Hours, _clkTm.Minutes);
+  char ss[4]; clockFormatSeconds(ss, sizeof(ss), _clkTm.Seconds);
+  char wdl[16]; clockFormatWeekDateLine(wdl, sizeof(wdl), clockDow(), _clkDt.Month, _clkDt.Date);
+
+  useDefaultTextFont(spr);
+  spr.fillRect(0, LEFT_CLOCK_Y, SIDE_X, H - LEFT_CLOCK_Y, p.bg);
+  spr.drawFastHLine(8, LEFT_CLOCK_Y, SIDE_X - 16, p.textDim);
+  spr.setTextDatum(TL_DATUM);
+  spr.setTextSize(2);
+  spr.setTextColor(p.text, p.bg);
+  spr.setCursor(8, LEFT_CLOCK_Y + 8);
+  spr.print(hm);
+  spr.setTextSize(1);
+  spr.setTextColor(p.textDim, p.bg);
+  spr.setCursor(72, LEFT_CLOCK_Y + 14);
+  spr.print(ss);
+  spr.setCursor(8, LEFT_CLOCK_Y + 33);
+  spr.print(wdl);
+  if (_onUsb) {
+    spr.setTextColor(p.body, p.bg);
+    spr.setCursor(8, LEFT_CLOCK_Y + 47);
+    spr.print("charging");
   }
-
-  // Landscape: 240×135 direct-to-LCD. Full fill only on entry; after that
-  // text glyph bg cells repaint themselves and the pet box (small, ~90×50)
-  // gets a fillRect each pet tick — small enough not to tear.
-  M5.Lcd.setRotation(clockOrient);
-  static uint8_t lastSec = 0xFF;
-  bool repaint = paintedOrient != clockOrient;
-  if (repaint) { M5.Lcd.fillScreen(p.bg); paintedOrient = clockOrient; lastSec = 0xFF; }
-
-  // Seconds tick at 1Hz; redrawing 3 strings at 60fps is 180 SPI ops/sec
-  // for nothing. Gate on the second changing (or full repaint).
-  if (repaint || _clkTm.Seconds != lastSec) {
-    lastSec = _clkTm.Seconds;
-    char wdl[16]; clockFormatWeekDateLine(wdl, sizeof(wdl), clockDow(), _clkDt.Month, _clkDt.Date);
-    char ssl[3];
-    if (clockValueInRange(_clkTm.Seconds, 0, 59)) snprintf(ssl, sizeof(ssl), "%02d", (int)_clkTm.Seconds);
-    else snprintf(ssl, sizeof(ssl), "--");
-    M5.Lcd.setTextDatum(MC_DATUM);
-    M5.Lcd.setTextSize(3); M5.Lcd.setTextColor(p.text, p.bg);    M5.Lcd.drawString(hm, 170, 42);
-    M5.Lcd.setTextSize(2); M5.Lcd.setTextColor(p.textDim, p.bg); M5.Lcd.drawString(ssl, 170, 72);
-                                                                  M5.Lcd.drawString(wdl, 170, 102);
-    M5.Lcd.setTextDatum(TL_DATUM);
-    M5.Lcd.setTextSize(1);
-  }
-
-  // Pet on left at 5 fps. Clear includes the overlay-particle zone above
-  // the body (y<30) — species draw Zzz/hearts there via BUDDY_Y_OVERLAY=6
-  // which doesn't go through _yb, so the box has to cover it.
-  static uint32_t lastPetTick = 0;
-  if (millis() - lastPetTick >= 200) {
-    lastPetTick = millis();
-    if (buddyMode) {
-      // ASCII glyphs don't self-clear; wipe the box each tick. Species
-      // hardcode BUDDY_X_CENTER=67 / BUDDY_Y_OVERLAY=6 for particles so
-      // keep portrait coords and just swap the surface — pet lands
-      // upper-left of landscape, which is where we want it anyway.
-      M5.Lcd.fillRect(0, 0, 115, 90, p.bg);
-      buddyRenderTo(&M5.Lcd, activeState);
-    } else {
-      // Full-frame GIFs paint every pixel (transparent → pal.bg), so a
-      // per-tick clear just adds a visible black flash between wipe and
-      // last scanline. The entry fillScreen on paintedOrient change
-      // already covers the surround.
-      characterSetState(activeState);
-      characterRenderTo(&M5.Lcd, 57, 45);
-    }
-  }
-  M5.Lcd.setRotation(0);
 }
 
 PersonaState derive(const TamaState& s) {
@@ -540,14 +515,14 @@ bool checkShake() {
 static void _infoHeader(const Palette& p, int& y, const char* section, uint8_t page) {
   spr.setTextColor(p.text, p.bg);
   useUtf8FontForText(spr, "Info", &fonts::efontCN_14);
-  spr.setCursor(4, y); spr.print("Info");
+  spr.setCursor(SIDE_TEXT_X, y); spr.print("Info");
   useDefaultTextFont(spr);
   spr.setTextColor(p.textDim, p.bg);
   spr.setCursor(W - 28, y); spr.printf("%u/%u", page + 1, INFO_PAGES);
   y += 12;
   spr.setTextColor(p.body, p.bg);
   useUtf8FontForText(spr, section, &fonts::efontCN_14);
-  spr.setCursor(4, y); spr.print(section);
+  spr.setCursor(SIDE_TEXT_X, y); spr.print(section);
   y += utf8ContainsNonAscii(section) ? 14 : 12;
   useDefaultTextFont(spr);
 }
@@ -557,28 +532,28 @@ void drawPasskey() {
   spr.fillSprite(p.bg);
   spr.setTextSize(1);
   spr.setTextColor(p.textDim, p.bg);
-  spr.setCursor(8, 56);  spr.print("BLUETOOTH PAIRING");
-  spr.setCursor(8, 184); spr.print("enter on desktop:");
+  spr.setCursor(12, 22);  spr.print("BLUETOOTH PAIRING");
+  spr.setCursor(12, 98); spr.print("enter on desktop:");
   spr.setTextSize(3);
   spr.setTextColor(p.text, p.bg);
   char b[8]; snprintf(b, sizeof(b), "%06lu", (unsigned long)blePasskey());
-  spr.setCursor((W - 18 * 6) / 2, 110);
+  spr.setCursor((W - 18 * 6) / 2, 58);
   spr.print(b);
 }
 
 void drawInfo() {
   const Palette& p = characterPalette();
-  const int TOP = 70;
-  spr.fillRect(0, TOP, W, H - TOP, p.bg);
+  spr.fillRect(SIDE_X, 0, SIDE_W, H, p.bg);
+  spr.drawFastVLine(SIDE_X, 8, H - 16, p.textDim);
   spr.setTextSize(1);
-  int y = TOP + 2;
+  int y = 4;
   auto ln = [&](const char* fmt, ...) {
     char b[80]; va_list a; va_start(a, fmt); vsnprintf(b, sizeof(b), fmt, a); va_end(a);
     utf8TrimIncompleteTail(b);
     char line[80];
-    clipDisplayText(line, b, 20);
+    clipDisplayText(line, b, SIDE_TEXT_CELLS);
     useUtf8FontForText(spr, line, &fonts::efontCN_10);
-    spr.setCursor(4, y); spr.print(line);
+    spr.setCursor(SIDE_TEXT_X, y); spr.print(line);
     y += utf8ContainsNonAscii(line) ? 11 : 8;
     useDefaultTextFont(spr);
   };
@@ -647,11 +622,11 @@ void drawInfo() {
 
     spr.setTextColor(p.text, p.bg);
     spr.setTextSize(2);
-    spr.setCursor(4, y);
+    spr.setCursor(SIDE_TEXT_X, y);
     spr.printf("%d%%", pct);
     spr.setTextSize(1);
     spr.setTextColor(full ? GREEN : (charging ? HOT : p.textDim), p.bg);
-    spr.setCursor(60, y + 4);
+    spr.setCursor(SIDE_TEXT_X + 56, y + 4);
     spr.print(full ? "full" : (charging ? "charging" : (usb ? "usb" : "battery")));
     y += 20;
 
@@ -678,7 +653,7 @@ void drawInfo() {
 
     spr.setTextColor(linked ? GREEN : HOT, p.bg);
     spr.setTextSize(2);
-    spr.setCursor(4, y);
+    spr.setCursor(SIDE_TEXT_X, y);
     spr.print(linked ? "linked" : "discover");
     spr.setTextSize(1);
     y += 20;
@@ -731,14 +706,15 @@ void drawInfo() {
 }
 static void drawApproval() {
   const Palette& p = characterPalette();
-  const int AREA = 84;
-  spr.fillRect(0, H - AREA, W, AREA, p.bg);
-  spr.drawFastHLine(0, H - AREA, W, p.textDim);
+  const int X = SIDE_X;
+  const int AREA = SIDE_W;
+  spr.fillRect(X, 0, AREA, H, p.bg);
+  spr.drawFastVLine(X, 8, H - 16, p.textDim);
 
   useDefaultTextFont(spr);
   spr.setTextSize(1);
   spr.setTextColor(p.textDim, p.bg);
-  spr.setCursor(4, H - AREA + 4);
+  spr.setCursor(X + SIDE_PAD, 6);
   uint32_t waited = (millis() - promptArrivedMs) / 1000;
   if (waited >= 10) spr.setTextColor(HOT, p.bg);
   spr.printf("approve? %lus", (unsigned long)waited);
@@ -746,43 +722,43 @@ static void drawApproval() {
   char toolLine[48];
   bool toolUtf8 = utf8ContainsNonAscii(tama.promptTool);
   uint16_t toolCells = utf8DisplayCells(tama.promptTool);
-  clipDisplayText(toolLine, tama.promptTool, toolUtf8 ? 14 : (toolCells <= 10 ? 10 : 20));
+  clipDisplayText(toolLine, tama.promptTool, toolUtf8 ? 10 : (toolCells <= 10 ? 10 : SIDE_TEXT_CELLS));
   spr.setTextColor(p.text, p.bg);
   if (toolUtf8) {
     spr.setFont(&fonts::efontCN_14);
     spr.setTextSize(1);
-    spr.setCursor(4, H - AREA + 18);
+    spr.setCursor(X + SIDE_PAD, 24);
   } else {
     useDefaultTextFont(spr);
-    spr.setTextSize(toolCells <= 10 ? 2 : 1);
-    spr.setCursor(4, H - AREA + (toolCells <= 10 ? 14 : 18));
+    spr.setTextSize(toolCells <= 8 ? 2 : 1);
+    spr.setCursor(X + SIDE_PAD, toolCells <= 8 ? 22 : 26);
   }
   spr.print(toolLine);
   useDefaultTextFont(spr);
 
   // Hint wraps by display cells so multi-byte UTF-8 never gets split.
   char hintLines[8][48] = {};
-  uint8_t hintRows = utf8WrapInto(tama.promptHint, hintLines, 8, 20, false);
-  uint8_t hintBack = (hintRows > 2) ? (hintRows - 2) : 0;
+  uint8_t hintRows = utf8WrapInto(tama.promptHint, hintLines, 8, SIDE_TEXT_CELLS, false);
+  uint8_t hintBack = (hintRows > 4) ? (hintRows - 4) : 0;
   uint8_t hintOffset = utf8AutoScrollOffset(hintBack, millis() - promptArrivedMs);
   spr.setTextColor(p.textDim, p.bg);
-  for (uint8_t i = 0; i < 2 && (hintOffset + i) < hintRows; ++i) {
+  for (uint8_t i = 0; i < 4 && (hintOffset + i) < hintRows; ++i) {
     useUtf8FontForText(spr, hintLines[hintOffset + i], &fonts::efontCN_12);
-    spr.setCursor(4, H - AREA + 38 + i * 12);
+    spr.setCursor(X + SIDE_PAD, 48 + i * 12);
     spr.print(hintLines[hintOffset + i]);
   }
   useDefaultTextFont(spr);
 
   if (responseSent) {
     spr.setTextColor(p.textDim, p.bg);
-    spr.setCursor(4, H - 12);
+    spr.setCursor(X + SIDE_PAD, H - 14);
     spr.print("sent...");
   } else {
     spr.setTextColor(GREEN, p.bg);
-    spr.setCursor(4, H - 12);
+    spr.setCursor(X + SIDE_PAD, H - 14);
     spr.print("A: approve");
     spr.setTextColor(HOT, p.bg);
-    spr.setCursor(W - 48, H - 12);
+    spr.setCursor(W - 44, H - 14);
     spr.print("B: deny");
   }
 }
@@ -841,71 +817,66 @@ static void tinyHeart(int x, int y, bool filled, uint16_t col) {
 }
 
 static void drawPetStats(const Palette& p) {
-  const int TOP = 70;
-  spr.fillRect(0, TOP, W, H - TOP, p.bg);
+  spr.fillRect(SIDE_X, 0, SIDE_W, H, p.bg);
+  spr.drawFastVLine(SIDE_X, 8, H - 16, p.textDim);
   spr.setTextSize(1);
-  int y = TOP + 16;
+  int y = 24;
 
   spr.setTextColor(p.textDim, p.bg);
-  spr.setCursor(6, y - 2); spr.print("mood");
+  spr.setCursor(SIDE_TEXT_X, y - 2); spr.print("mood");
   uint8_t mood = statsMoodTier();
   uint16_t moodCol = (mood >= 3) ? RED : (mood >= 2) ? HOT : p.textDim;
-  for (int i = 0; i < 4; i++) tinyHeart(54 + i * 16, y + 2, i < mood, moodCol);
+  for (int i = 0; i < 4; i++) tinyHeart(SIDE_TEXT_X + 48 + i * 14, y + 2, i < mood, moodCol);
 
-  y += 20;
-  spr.setCursor(6, y - 2); spr.print("fed");
+  y += 17;
+  spr.setCursor(SIDE_TEXT_X, y - 2); spr.print("fed");
   uint8_t fed = statsFedProgress();
   for (int i = 0; i < 10; i++) {
-    int px = 38 + i * 9;
+    int px = SIDE_TEXT_X + 34 + i * 8;
     if (i < fed) spr.fillCircle(px, y + 1, 2, p.body);
     else spr.drawCircle(px, y + 1, 2, p.textDim);
   }
 
-  y += 20;
-  spr.setCursor(6, y - 2); spr.print("energy");
+  y += 17;
+  spr.setCursor(SIDE_TEXT_X, y - 2); spr.print("energy");
   uint8_t en = statsEnergyTier();
   uint16_t enCol = (en >= 4) ? 0x07FF : (en >= 2) ? 0xFFE0 : HOT;
   for (int i = 0; i < 5; i++) {
-    int px = 54 + i * 13;
+    int px = SIDE_TEXT_X + 54 + i * 11;
     if (i < en) spr.fillRect(px, y - 2, 9, 6, enCol);
     else spr.drawRect(px, y - 2, 9, 6, p.textDim);
   }
 
-  y += 24;
-  spr.fillRoundRect(6, y - 2, 42, 14, 3, p.body);
+  y += 18;
+  spr.fillRoundRect(SIDE_TEXT_X, y - 2, 42, 14, 3, p.body);
   spr.setTextColor(p.bg, p.body);
-  spr.setCursor(11, y + 1); spr.printf("Lv %u", stats().level);
+  spr.setCursor(SIDE_TEXT_X + 5, y + 1); spr.printf("Lv %u", stats().level);
 
-  y += 20;
+  y += 18;
   spr.setTextColor(p.textDim, p.bg);
-  spr.setCursor(6, y);
+  spr.setCursor(SIDE_TEXT_X, y);
   spr.printf("approved %u", stats().approvals);
-  spr.setCursor(6, y + 10);
+  spr.setCursor(SIDE_TEXT_X, y + 10);
   spr.printf("denied   %u", stats().denials);
-  uint32_t nap = stats().napSeconds;
-  spr.setCursor(6, y + 20);
-  spr.printf("napped   %luh%02lum", nap/3600, (nap/60)%60);
   auto tokFmt = [&](const char* label, uint32_t v, int yPx) {
-    spr.setCursor(6, yPx);
+    spr.setCursor(SIDE_TEXT_X, yPx);
     if (v >= 1000000)   spr.printf("%s%lu.%luM", label, v/1000000, (v/100000)%10);
     else if (v >= 1000) spr.printf("%s%lu.%luK", label, v/1000, (v/100)%10);
     else                spr.printf("%s%lu", label, v);
   };
-  tokFmt("tokens   ", stats().tokens, y + 30);
-  tokFmt("today    ", tama.tokensToday, y + 40);
+  tokFmt("tokens   ", stats().tokens, y + 20);
+  tokFmt("today    ", tama.tokensToday, y + 30);
 }
 
 static void drawPetHowTo(const Palette& p) {
-  const int TOP = 70;
-  spr.fillRect(0, TOP, W, H - TOP, p.bg);
+  spr.fillRect(SIDE_X, 0, SIDE_W, H, p.bg);
+  spr.drawFastVLine(SIDE_X, 8, H - 16, p.textDim);
   spr.setTextSize(1);
-  int y = TOP + 2;
+  int y = 18;
   auto ln = [&](uint16_t c, const char* s) {
-    spr.setTextColor(c, p.bg); spr.setCursor(6, y); spr.print(s); y += 9;
+    spr.setTextColor(c, p.bg); spr.setCursor(SIDE_TEXT_X, y); spr.print(s); y += 9;
   };
   auto gap = [&]() { y += 4; };
-
-  y += 12;  // room for the PET header drawn by drawPet()
 
   ln(p.body,    "MOOD");
   ln(p.textDim, " approve fast = up");
@@ -928,7 +899,7 @@ static void drawPetHowTo(const Palette& p) {
 
 void drawPet() {
   const Palette& p = characterPalette();
-  int y = 70;
+  int y = 2;
 
   if (petPage == 0) drawPetStats(p);
   else drawPetHowTo(p);
@@ -936,7 +907,7 @@ void drawPet() {
   // Header on top of whichever page drew — title left, counter right
   spr.setTextSize(1);
   spr.setTextColor(p.text, p.bg);
-  spr.setCursor(4, y + 2);
+  spr.setCursor(SIDE_TEXT_X, y + 2);
   if (ownerName()[0]) {
     spr.printf("%s's %s", ownerName(), petName());
   } else {
@@ -947,63 +918,287 @@ void drawPet() {
   spr.printf("%u/%u", petPage + 1, PET_PAGES);
 }
 
-void drawHUD() {
-  if (tama.promptId[0]) { drawApproval(); return; }
-  const Palette& p = characterPalette();
-  const int SHOW = 3, LH = 12, WIDTH = 20;
-  const int AREA = SHOW * LH + 4;
-  spr.fillRect(0, H - AREA, W, AREA, p.bg);
+static uint8_t pctFromCap(uint32_t value, uint32_t cap) {
+  if (cap == 0) return 0;
+  uint32_t pct = (uint32_t)((uint64_t)value * 100 / cap);
+  return (uint8_t)(pct > 100 ? 100 : pct);
+}
+
+static void formatCompactNumber(char* out, size_t size, uint32_t value) {
+  if (value >= 1000000) {
+    snprintf(out, size, "%lu.%luM", (unsigned long)(value / 1000000), (unsigned long)((value / 100000) % 10));
+  } else if (value >= 1000) {
+    snprintf(out, size, "%lu.%luK", (unsigned long)(value / 1000), (unsigned long)((value / 100) % 10));
+  } else {
+    snprintf(out, size, "%lu", (unsigned long)value);
+  }
+}
+
+static void drawUsageBar(int x, int y, int w, int h, uint8_t pct, uint16_t fill, uint16_t border) {
+  spr.drawRect(x, y, w, h, border);
+  int inner = w - 2;
+  int filled = (int)((uint32_t)inner * pct / 100);
+  if (filled > 0) spr.fillRect(x + 1, y + 1, filled, h - 2, fill);
+}
+
+static void drawUsageRow(const Palette& p, int y, uint8_t pct, const char* window,
+                         const char* detail, uint16_t color) {
+  char pctLine[8];
+  snprintf(pctLine, sizeof(pctLine), "%u%%", pct);
+  spr.setTextColor(p.text, p.bg);
+  spr.setTextSize(2);
+  spr.setCursor(SIDE_TEXT_X, y);
+  spr.print(pctLine);
+  spr.setTextSize(1);
+  spr.setTextColor(p.text, p.bg);
+  int winX = W - (int)strlen(window) * 12 - 6;
+  if (winX < SIDE_TEXT_X + 70) winX = SIDE_TEXT_X + 70;
+  spr.setTextSize(2);
+  spr.setCursor(winX, y);
+  spr.print(window);
   spr.setTextSize(1);
 
-  if (tama.lineGen != lastLineGen) {
-    msgScroll = 0;
-    lastLineGen = tama.lineGen;
-    hudScrollStartedMs = millis();
-    wake();
+  drawUsageBar(SIDE_TEXT_X, y + 23, SIDE_W - SIDE_PAD * 2, 11, pct, color, p.textDim);
+  spr.setTextColor(p.textDim, p.bg);
+  spr.setCursor(SIDE_TEXT_X, y + 38);
+  spr.print(detail);
+}
+
+static void drawUsagePanel() {
+  const Palette& p = characterPalette();
+  spr.fillRect(SIDE_X, 0, SIDE_W, H, p.bg);
+  spr.drawFastVLine(SIDE_X, 8, H - 16, p.textDim);
+  spr.setTextSize(1);
+  spr.setTextColor(p.text, p.bg);
+  spr.setCursor(SIDE_TEXT_X, 5);
+  spr.print("CODEX USAGE");
+  bool live = tama.usageQuota ? tama.usageLive : dataConnected();
+  spr.setTextColor(live ? USAGE_LIME : p.textDim, p.bg);
+  spr.setCursor(W - 30, 5);
+  spr.print(live ? "LIVE" : "IDLE");
+
+  uint8_t shortPct = tama.usageQuota ? tama.usageShortPct : pctFromCap(tama.tokensToday, 100000);
+  uint8_t longPct = tama.usageQuota
+      ? tama.usageLongPct
+      : pctFromCap(stats().tokens % TOKENS_PER_LEVEL, TOKENS_PER_LEVEL);
+  const char* shortWindow = (tama.usageQuota && tama.usageShortWindow[0]) ? tama.usageShortWindow : "today";
+  const char* longWindow = (tama.usageQuota && tama.usageLongWindow[0]) ? tama.usageLongWindow : "level";
+
+  char shortDetail[32];
+  char longDetail[32];
+  if (tama.usageQuota) {
+    snprintf(shortDetail, sizeof(shortDetail), "resets in %s", tama.usageShortReset[0] ? tama.usageShortReset : "-");
+    snprintf(longDetail, sizeof(longDetail), "resets in %s", tama.usageLongReset[0] ? tama.usageLongReset : "-");
+  } else {
+    char today[12], total[12];
+    formatCompactNumber(today, sizeof(today), tama.tokensToday);
+    formatCompactNumber(total, sizeof(total), stats().tokens);
+    snprintf(shortDetail, sizeof(shortDetail), "%s output tokens", today);
+    snprintf(longDetail, sizeof(longDetail), "%s lifetime tokens", total);
   }
 
-  if (tama.nLines == 0) {
-    char msgLine[48];
-    clipDisplayText(msgLine, tama.msg, WIDTH);
-    spr.setTextColor(p.text, p.bg);
-    useUtf8FontForText(spr, msgLine, &fonts::efontCN_12);
-    spr.setCursor(4, H - LH - 2);
-    spr.print(msgLine);
-    useDefaultTextFont(spr);
+  drawUsageRow(p, 24, shortPct, shortWindow, shortDetail, USAGE_BLUE);
+  drawUsageRow(p, 78, longPct, longWindow, longDetail, USAGE_LIME);
+}
+
+static uint16_t sessionColor(const char* state) {
+  if (strcmp(state, "running") == 0) return USAGE_BLUE;
+  if (strcmp(state, "waiting") == 0) return HOT;
+  return USAGE_LIME;
+}
+
+static const char* sessionLabel(const char* state) {
+  if (strcmp(state, "running") == 0) return "work";
+  if (strcmp(state, "waiting") == 0) return "approve";
+  return "done";
+}
+
+static bool sessionIsWaiting(const char* state) {
+  return strcmp(state, "waiting") == 0;
+}
+
+static bool sessionIsDone(const char* state) {
+  return strcmp(state, "done") == 0;
+}
+
+static const char* previousSessionState(const char* id) {
+  if (!id || !id[0]) return nullptr;
+  for (uint8_t i = 0; i < 3; ++i) {
+    if (strcmp(lastSessionStates[i].id, id) == 0) return lastSessionStates[i].state;
+  }
+  return nullptr;
+}
+
+static void rememberCurrentSessionStates() {
+  memset(lastSessionStates, 0, sizeof(lastSessionStates));
+  for (uint8_t i = 0; i < tama.sessionCount && i < 3; ++i) {
+    strncpy(lastSessionStates[i].id, tama.sessions[i].id, sizeof(lastSessionStates[i].id) - 1);
+    lastSessionStates[i].id[sizeof(lastSessionStates[i].id) - 1] = 0;
+    strncpy(lastSessionStates[i].state, tama.sessions[i].state, sizeof(lastSessionStates[i].state) - 1);
+    lastSessionStates[i].state[sizeof(lastSessionStates[i].state) - 1] = 0;
+  }
+}
+
+static void focusSessionPanel() {
+  napping = false;
+  wake();
+  displayMode = DISP_NORMAL;
+  menuOpen = settingsOpen = resetOpen = false;
+  applyDisplayMode();
+  characterInvalidate();
+  if (buddyMode) buddyInvalidate();
+}
+
+static void handleSessionTransitionAlerts(bool suppressSessionAudio) {
+  if (!dataConnected()) {
+    lastSessionStatesReady = false;
+    memset(lastSessionStates, 0, sizeof(lastSessionStates));
     return;
   }
 
-  // Wrap all transcript lines into a flat display buffer. Track which
-  // transcript index each display row came from, so we can dim older ones.
-  static char disp[32][48];
-  static uint8_t srcOf[32];
-  uint8_t nDisp = 0;
-  for (uint8_t i = 0; i < tama.nLines && nDisp < 32; i++) {
-    uint8_t got = utf8WrapInto(tama.lines[i], &disp[nDisp], 32 - nDisp, WIDTH);
-    for (uint8_t j = 0; j < got; j++) srcOf[nDisp + j] = i;
-    nDisp += got;
+  bool becameWaiting = false;
+  bool becameDone = false;
+  if (lastSessionStatesReady) {
+    for (uint8_t i = 0; i < tama.sessionCount && i < 3; ++i) {
+      const char* id = tama.sessions[i].id;
+      const char* state = tama.sessions[i].state;
+      const char* previous = previousSessionState(id);
+      if (!previous || strcmp(previous, state) == 0) continue;
+      if (sessionIsWaiting(state)) becameWaiting = true;
+      else if (sessionIsDone(state)) becameDone = true;
+    }
   }
 
-  uint8_t maxBack = (nDisp > SHOW) ? (nDisp - SHOW) : 0;
-  msgScroll = utf8AutoScrollOffset(maxBack, millis() - hudScrollStartedMs);
+  rememberCurrentSessionStates();
+  lastSessionStatesReady = true;
 
-  int end = (int)nDisp - msgScroll;
-  int start = end - SHOW; if (start < 0) start = 0;
-  uint8_t newest = tama.nLines - 1;
-  for (int i = 0; start + i < end; i++) {
-    uint8_t row = start + i;
-    bool fresh = (srcOf[row] == newest) && (msgScroll == 0);
-    spr.setTextColor(fresh ? p.text : p.textDim, p.bg);
-    useUtf8FontForText(spr, disp[row], &fonts::efontCN_12);
-    spr.setCursor(4, H - AREA + 2 + i * LH);
-    spr.print(disp[row]);
+  if (suppressSessionAudio) return;
+  if (becameWaiting) {
+    focusSessionPanel();
+    beep(1200, 80);
+  } else if (becameDone) {
+    beep(2200, 50);
   }
+}
+
+static bool dismissedDoneSession(const char* id) {
+  if (!id || !id[0]) return false;
+  for (uint8_t i = 0; i < 8; ++i) {
+    if (strcmp(dismissedDoneSessionIds[i], id) == 0) return true;
+  }
+  return false;
+}
+
+static void rememberDismissedDoneSession(const char* id) {
+  if (!id || !id[0] || dismissedDoneSession(id)) return;
+  strncpy(dismissedDoneSessionIds[dismissedDoneSessionNext], id,
+          sizeof(dismissedDoneSessionIds[dismissedDoneSessionNext]) - 1);
+  dismissedDoneSessionIds[dismissedDoneSessionNext][sizeof(dismissedDoneSessionIds[dismissedDoneSessionNext]) - 1] = 0;
+  dismissedDoneSessionNext = (dismissedDoneSessionNext + 1) % 8;
+}
+
+static void restoreDismissedDoneSession(const char* id) {
+  if (!id || !id[0]) return;
+  for (uint8_t i = 0; i < 8; ++i) {
+    if (strcmp(dismissedDoneSessionIds[i], id) == 0) {
+      dismissedDoneSessionIds[i][0] = 0;
+    }
+  }
+}
+
+static void restoreActiveSessionDismissals() {
+  for (uint8_t i = 0; i < tama.sessionCount && i < 3; ++i) {
+    if (!sessionIsDone(tama.sessions[i].state)) {
+      restoreDismissedDoneSession(tama.sessions[i].id);
+    }
+  }
+}
+
+static bool sessionVisible(uint8_t idx) {
+  if (idx >= tama.sessionCount || idx >= 3) return false;
+  return !(sessionIsDone(tama.sessions[idx].state) && dismissedDoneSession(tama.sessions[idx].id));
+}
+
+static uint8_t visibleSessionCount() {
+  uint8_t n = 0;
+  for (uint8_t i = 0; i < tama.sessionCount && i < 3; ++i) {
+    if (sessionVisible(i)) n++;
+  }
+  return n;
+}
+
+static bool dismissVisibleDoneSessions() {
+  bool dismissed = false;
+  for (uint8_t i = 0; i < tama.sessionCount && i < 3; ++i) {
+    if (sessionVisible(i) && sessionIsDone(tama.sessions[i].state)) {
+      rememberDismissedDoneSession(tama.sessions[i].id);
+      dismissed = true;
+    }
+  }
+  return dismissed;
+}
+
+static void drawSessionIcon(int x, int y, const char* state, uint16_t color, const Palette& p) {
+  if (strcmp(state, "running") == 0) {
+    spr.fillCircle(x, y, 4, color);
+    spr.drawFastHLine(x - 2, y, 5, p.bg);
+    return;
+  }
+  if (strcmp(state, "waiting") == 0) {
+    spr.fillTriangle(x, y - 5, x - 5, y + 4, x + 5, y + 4, color);
+    spr.setTextColor(p.bg, color);
+    spr.setCursor(x - 1, y - 2);
+    spr.print("!");
+    return;
+  }
+  spr.drawLine(x - 5, y, x - 1, y + 4, color);
+  spr.drawLine(x - 1, y + 4, x + 6, y - 5, color);
+}
+
+static void drawSessionPanel() {
+  const Palette& p = characterPalette();
+  spr.fillRect(SIDE_X, 0, SIDE_W, H, p.bg);
+  spr.drawFastVLine(SIDE_X, 8, H - 16, p.textDim);
   useDefaultTextFont(spr);
-  if (msgScroll > 0) {
-    spr.setTextColor(p.body, p.bg);
-    spr.setCursor(W - 18, H - LH - 2);
-    spr.printf("-%u", msgScroll);
+  spr.setTextSize(1);
+  spr.setTextColor(p.text, p.bg);
+  spr.setCursor(SIDE_TEXT_X, 5);
+  spr.print("CODEX SESSIONS");
+  spr.setTextColor(dataConnected() ? USAGE_LIME : p.textDim, p.bg);
+  spr.setCursor(W - 30, 5);
+  spr.print(dataConnected() ? "LIVE" : "IDLE");
+
+  uint8_t visibleIdx = 0;
+  uint8_t visibleTotal = visibleSessionCount();
+  for (uint8_t i = 0; i < tama.sessionCount && i < 3; ++i) {
+    if (!sessionVisible(i)) continue;
+    const int y = 25 + visibleIdx * 36;
+    const char* state = tama.sessions[i].state;
+    uint16_t color = sessionColor(state);
+    drawSessionIcon(SIDE_TEXT_X + 6, y + 9, state, color, p);
+
+    char title[48];
+    clipDisplayText(title, tama.sessions[i].name, 18);
+    spr.setTextColor(p.text, p.bg);
+    useUtf8FontForText(spr, title, &fonts::efontCN_12);
+    spr.setCursor(SIDE_TEXT_X + 18, y);
+    spr.print(title);
+    useDefaultTextFont(spr);
+
+    spr.setTextColor(color, p.bg);
+    spr.setCursor(SIDE_TEXT_X + 18, y + 15);
+    spr.print(sessionLabel(state));
+
+    if (visibleIdx < visibleTotal - 1 && visibleIdx < 2) {
+      spr.drawFastHLine(SIDE_TEXT_X, y + 29, SIDE_W - SIDE_PAD * 2, p.textDim);
+    }
+    visibleIdx++;
   }
+}
+
+void drawHUD() {
+  if (visibleSessionCount() > 0) { drawSessionPanel(); return; }
+  drawUsagePanel();
 }
 
 void setup() {
@@ -1017,7 +1212,7 @@ void setup() {
   uint32_t serialWaitStart = millis();
   while (!Serial && millis() - serialWaitStart < 500) delay(10);
   Serial.println("[boot] setup");
-  M5.Lcd.setRotation(0);
+  M5.Lcd.setRotation(DISPLAY_ROTATION);
   M5.Imu.Init();
   M5.Beep.begin();
   startBt();
@@ -1027,6 +1222,7 @@ void setup() {
   lastInteractMs = millis();
   statsLoad();
   settingsLoad();
+  M5.Lcd.setRotation(displayRotation());
   petNameLoad();
   buddyInit();
 
@@ -1071,6 +1267,7 @@ void loop() {
   uint32_t now = millis();
 
   dataPoll(&tama);
+  restoreActiveSessionDismissals();
   if (statsPollLevelUp()) triggerOneShot(P_CELEBRATE, 3000);
   baseState = derive(tama);
 
@@ -1097,8 +1294,8 @@ void loop() {
     }
   }
 
-  // BtnA: step through fake scenarios
   // Prompt arrival: beep, reset response flag
+  bool promptAlertPlayed = false;
   if (strcmp(tama.promptId, lastPromptId) != 0) {
     strncpy(lastPromptId, tama.promptId, sizeof(lastPromptId)-1);
     lastPromptId[sizeof(lastPromptId)-1] = 0;
@@ -1112,8 +1309,8 @@ void loop() {
       napping = false;
       wake();
       beep(1200, 80);   // alert chirp
-      // Jump to the approval screen no matter what was open — drawApproval
-      // only runs from drawHUD which only runs in DISP_NORMAL.
+      promptAlertPlayed = true;
+      // Jump home so the read-only session list can show the waiting state.
       displayMode = DISP_NORMAL;
       menuOpen = settingsOpen = resetOpen = false;
       applyDisplayMode();
@@ -1121,8 +1318,9 @@ void loop() {
       if (buddyMode) buddyInvalidate();
     }
   }
+  handleSessionTransitionAlerts(promptAlertPlayed);
 
-  bool inPrompt = tama.promptId[0] && !responseSent;
+  bool inPrompt = false;
 
   if (VALIDATION_UI) {
     napping = false;
@@ -1254,6 +1452,8 @@ void loop() {
       beep(2400, 30);
       petPage = (petPage + 1) % PET_PAGES;
       applyDisplayMode();
+    } else if (visibleSessionCount() > 0 && dismissVisibleDoneSessions()) {
+      beep(1400, 30);
     } else {
       beep(2400, 30);
       msgScroll = (msgScroll >= 30) ? 0 : msgScroll + 1;
@@ -1273,19 +1473,12 @@ void loop() {
                && !menuOpen && !settingsOpen && !resetOpen && !inPrompt
                && tama.sessionsRunning == 0 && tama.sessionsWaiting == 0
                && dataRtcValid() && _onUsb;
-  if (clocking) clockUpdateOrient();
-  else { clockOrient = 0; orientFrames = 0; clockSwapFrames = 0; paintedOrient = 0; }
-  bool landscapeClock = clocking && clockOrient != 0;
-
   static bool wasClocking = false;
-  static bool wasLandscape = false;
-  if (clocking != wasClocking || landscapeClock != wasLandscape) {
-    if (clocking && !landscapeClock) characterSetPeek(true);
-    else applyDisplayMode();
+  if (clocking != wasClocking) {
+    applyDisplayMode();
     characterInvalidate();
     if (buddyMode) buddyInvalidate();
     wasClocking = clocking;
-    wasLandscape = landscapeClock;
   }
   if (clocking) {
     uint8_t dow = clockDow();
@@ -1307,9 +1500,8 @@ void loop() {
   if (pk && !lastPasskey) { wake(); beep(1800, 60); }
   lastPasskey = pk;
 
-  if (napping || screenOff || landscapeClock) {
-    // skip sprite render — face-down, powered off, or landscape clock
-    // (which draws direct-to-LCD below)
+  if (napping || screenOff) {
+    // skip sprite render while face-down or powered off
   } else if (buddyMode) {
     buddyTick(activeState);
   } else if (characterLoaded()) {
@@ -1337,20 +1529,17 @@ void loop() {
       spr.print("no character loaded");
     }
   }
-  if (inPrompt) {
-    drawApproval();
-    spr.pushSprite(0, 0);
-  } else if (landscapeClock) {
-    drawClock();
-  } else if (!napping && !screenOff) {
+  if (!napping && !screenOff) {
     if (blePasskey()) drawPasskey();
-    else if (clocking) drawClock();
-    else if (displayMode == DISP_INFO) drawInfo();
-    else if (displayMode == DISP_PET) drawPet();
-    else if (settings().hud) drawHUD();
-    if (resetOpen) drawReset();
-    else if (settingsOpen) drawSettings();
-    else if (menuOpen) drawMenu();
+    else {
+      if (buddyMode || characterLoaded()) drawLeftClockPanel();
+      if (displayMode == DISP_INFO) drawInfo();
+      else if (displayMode == DISP_PET) drawPet();
+      else drawHUD();
+      if (resetOpen) drawReset();
+      else if (settingsOpen) drawSettings();
+      else if (menuOpen) drawMenu();
+    }
     spr.pushSprite(0, 0);
   }
 

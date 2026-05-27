@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -241,6 +242,79 @@ def test_session_log_watcher_poll_rescans_recursively_and_honors_max_files(tmp_p
     second_poll = watcher.poll(now=3_150.0)
 
     assert [session.session_id for session in second_poll] == ["session-3", "session-2"]
+
+
+def test_session_log_watcher_enriches_title_from_codex_state_db(tmp_path: Path):
+    root = tmp_path / "logs"
+    log_path = root / "2026" / "05" / "27" / "thread.jsonl"
+    title_db_path = tmp_path / "state_5.sqlite"
+    _write_log(
+        log_path,
+        [
+            _session_meta(session_id="thread-1", cwd="/tmp/project"),
+            _event(3_000.0, "task_started", turn_id="turn-a", started_at=3_000.0),
+            _event(3_005.0, "agent_message", message="Working"),
+        ],
+    )
+    os.utime(log_path, (3_020.0, 3_020.0))
+    conn = sqlite3.connect(title_db_path)
+    conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, first_user_message TEXT)")
+    conn.execute(
+        "INSERT INTO threads (id, title, first_user_message) VALUES (?, ?, ?)",
+        ("thread-1", "评估 StickS3 接入 Codex App", "fallback"),
+    )
+    conn.commit()
+    conn.close()
+
+    watcher = SessionLogWatcher(root, title_db_path=title_db_path)
+
+    sessions = watcher.poll(now=3_030.0)
+
+    assert sessions[0].title == "评估 StickS3 接入 Codex App"
+
+
+def test_session_log_watcher_prefers_codex_session_index_title(tmp_path: Path):
+    root = tmp_path / "logs"
+    log_path = root / "2026" / "05" / "27" / "thread.jsonl"
+    title_db_path = tmp_path / "state_5.sqlite"
+    title_index_path = tmp_path / "session_index.jsonl"
+    _write_log(
+        log_path,
+        [
+            _session_meta(session_id="thread-1", cwd="/tmp/project"),
+            _event(3_000.0, "task_started", turn_id="turn-a", started_at=3_000.0),
+            _event(3_005.0, "agent_message", message="Working"),
+        ],
+    )
+    os.utime(log_path, (3_020.0, 3_020.0))
+    conn = sqlite3.connect(title_db_path)
+    conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, first_user_message TEXT)")
+    conn.execute(
+        "INSERT INTO threads (id, title, first_user_message) VALUES (?, ?, ?)",
+        ("thread-1", "这个工程能否满足我在StickS3上接入Codex App？", "fallback"),
+    )
+    conn.commit()
+    conn.close()
+    _write_log(
+        title_index_path,
+        [
+            {
+                "id": "thread-1",
+                "thread_name": "评估 StickS3 接入 Codex App",
+                "updated_at": "2026-05-25T05:39:52.699075Z",
+            }
+        ],
+    )
+
+    watcher = SessionLogWatcher(
+        root,
+        title_db_path=title_db_path,
+        title_index_path=title_index_path,
+    )
+
+    sessions = watcher.poll(now=3_030.0)
+
+    assert sessions[0].title == "评估 StickS3 接入 Codex App"
 
 
 def test_session_log_watcher_skips_files_older_than_activity_window(tmp_path: Path):

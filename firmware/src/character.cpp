@@ -40,7 +40,8 @@ static int         gifX = 0, gifY = 0, gifW = 0, gifH = 0;
 // Peek mode pins the GIF bottom to the info-panel top (y=70) so the pet
 // sits on the panel edge regardless of canvas height. Home mode centers
 // in the upper 140px. No padding assumed in the source art.
-static const int   PEEK_TOP = 70;
+static const int   PEEK_TOP = 76;
+static const int   LANDSCAPE_PET_H = 76;
 static bool        peekMode = false;
 // Draw target — defaults to the sprite; characterRenderTo() retargets to
 // M5.Lcd for the landscape clock (both inherit TFT_eSPI).
@@ -50,8 +51,11 @@ static lgfx::LovyanGFX*   _tgt = &spr;
 static void gifPlace() {
   int outW = peekMode ? gifW / 2 : gifW;
   int outH = peekMode ? gifH / 2 : gifH;
-  gifX = (spr.width() - outW) / 2;
-  gifY = peekMode ? (PEEK_TOP - outH) / 2 : (140 - outH) / 2;
+  bool landscape = spr.width() > spr.height();
+  int areaW = landscape ? 96 : spr.width();
+  gifX = (areaW - outW) / 2;
+  gifY = landscape ? (LANDSCAPE_PET_H - outH) / 2
+                   : (peekMode ? (PEEK_TOP - outH) / 2 : (140 - outH) / 2);
 }
 static uint32_t    nextFrameAt = 0;
 static uint32_t    animPauseUntil = 0;
@@ -354,15 +358,17 @@ void characterTick() {
 
     // Clear a band around the text, not the whole sprite — keeps overlays
     // like the approval panel and the HUD untouched.
-    int cy = peekMode ? 35 : 60;
-    spr.fillRect(0, cy - 14, spr.width(), 28, pal.bg);
+    bool landscape = spr.width() > spr.height();
+    int areaW = landscape ? 96 : spr.width();
+    int cy = landscape ? LANDSCAPE_PET_H / 2 : (peekMode ? 35 : 60);
+    spr.fillRect(0, cy - 14, areaW, 28, pal.bg);
 
     const char* line = ts.frames[textFrame];
     int len = strlen(line);
     int tw = len * 12;                                    // size-2 glyph width
     spr.setTextColor(pal.body, pal.bg);
     spr.setTextSize(2);
-    spr.setCursor((spr.width() - tw) / 2, cy - 8);
+    spr.setCursor((areaW - tw) / 2, cy - 8);
     spr.print(line);
 
     textFrame = (textFrame + 1) % ts.nFrames;

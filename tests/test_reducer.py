@@ -133,3 +133,32 @@ def test_ble_payload_uses_utf8_json_and_stays_within_device_budget_for_cjk_entri
     assert len(utf8_line) + 1 <= 900
     assert len(escaped_line) + 1 > 1024
     assert payload["entries"]
+
+
+def test_ble_payload_includes_usage_when_present():
+    reducer = BuddyStateReducer()
+    reducer.apply(TurnState(thread_id="thr_1", turn_id="turn_1", active=True))
+
+    snapshot = reducer.snapshot()
+    payload = snapshot.__class__(
+        total=snapshot.total,
+        running=snapshot.running,
+        waiting=snapshot.waiting,
+        msg=snapshot.msg,
+        entries=snapshot.entries,
+        tokens=snapshot.tokens,
+        tokens_today=snapshot.tokens_today,
+        prompt=snapshot.prompt,
+        usage={
+            "live": True,
+            "short_pct": 13,
+            "short_window": "5h",
+            "short_reset": "58m",
+            "long_pct": 48,
+            "long_window": "7d",
+            "long_reset": "3d 21h",
+        },
+    ).as_ble_payload()
+
+    assert payload["usage"]["short_pct"] == 13
+    assert payload["usage"]["long_window"] == "7d"

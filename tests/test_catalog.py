@@ -17,6 +17,7 @@ def _session(
     tokens_total: int = 0,
     tokens_session: int = 0,
     pending_prompt: Optional[SessionPrompt] = None,
+    title: str = "",
 ) -> SessionRecord:
     return SessionRecord(
         session_id=session_id,
@@ -31,6 +32,7 @@ def _session(
         tokens_session=tokens_session,
         control_capability=control_capability,
         pending_prompt=pending_prompt,
+        title=title,
     )
 
 
@@ -194,6 +196,49 @@ def test_recent_completed_session_becomes_primary_when_no_active_sessions_remain
     assert snapshot.waiting == 0
     assert snapshot.msg == "Completed the refactor"
     assert snapshot.entries == ["Completed the refactor"]
+    assert snapshot.sessions == [{"id": "completed-1", "name": "project", "state": "done"}]
+
+
+def test_catalog_exports_compact_sessions_with_titles_and_states():
+    catalog = SessionCatalog(active_window_seconds=300, completed_window_seconds=120)
+    catalog.upsert(
+        _session(
+            "running-1",
+            state="running",
+            control_capability="readonly",
+            last_activity_at=100.0,
+            latest_message="Working",
+            title="评估 StickS3 接入 Codex App",
+        )
+    )
+    catalog.upsert(
+        _session(
+            "waiting-1",
+            state="waiting",
+            control_capability="readonly",
+            last_activity_at=101.0,
+            latest_message="Approval",
+            title="Update release notes",
+        )
+    )
+    catalog.upsert(
+        _session(
+            "recent-1",
+            state="recent",
+            control_capability="readonly",
+            last_activity_at=99.0,
+            latest_message="Done",
+            title="Recent work",
+        )
+    )
+
+    snapshot = catalog.snapshot(now=110.0)
+
+    assert snapshot.sessions == [
+        {"id": "waiting-1", "name": "Update release notes", "state": "waiting"},
+        {"id": "running-1", "name": "评估 StickS3 接入 Codex App", "state": "running"},
+        {"id": "recent-1", "name": "Recent work", "state": "done"},
+    ]
 
 
 def test_stale_completed_sessions_drop_out_of_the_visible_snapshot():

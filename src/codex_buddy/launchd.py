@@ -24,6 +24,10 @@ def render_launchd_plist(
     log_dir: Path,
 ) -> str:
     label = launchd_label()
+    environment: dict[str, str] = {}
+    local_src = repo_root / "src"
+    if (local_src / "codex_buddy").exists():
+        environment["PYTHONPATH"] = str(local_src)
     payload = {
         "Label": label,
         "ProgramArguments": [
@@ -40,6 +44,8 @@ def render_launchd_plist(
         "StandardOutPath": str(log_dir / f"{label}.stdout.log"),
         "StandardErrorPath": str(log_dir / f"{label}.stderr.log"),
     }
+    if environment:
+        payload["EnvironmentVariables"] = environment
     return plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=False).decode("utf-8")
 
 
@@ -97,10 +103,23 @@ def launchd_service_status(
     pid = _parse_launchctl_int(raw_output, "PID") if completed.returncode == 0 else None
     last_exit_status = _parse_launchctl_int(raw_output, "LastExitStatus") if completed.returncode == 0 else None
     parsed_label = _parse_launchctl_string(raw_output, "Label") if completed.returncode == 0 else None
+    loaded = completed.returncode == 0
+    if not raw_output:
+        printed = subprocess.run(
+            [launchctl_bin, "print", f"{_launchd_domain()}/{label}"],
+            capture_output=True,
+            text=True,
+        )
+        raw_output = (printed.stdout or printed.stderr).strip()
+        if printed.returncode == 0:
+            loaded = True
+            pid = _parse_print_pid(raw_output)
+            last_exit_status = _parse_print_last_exit_code(raw_output)
+            parsed_label = label
 
     return {
         "label": parsed_label or label,
-        "loaded": completed.returncode == 0,
+        "loaded": loaded,
         "running": pid is not None and pid > 0,
         "pid": pid,
         "last_exit_status": last_exit_status,
@@ -125,3 +144,13 @@ def _parse_launchctl_string(output: str, key: str) -> Optional[str]:
     if match is None:
         return None
     return match.group(1)
+
+
+def _parse_print_pid(output: str) -> Optional[int]:
+    match = re.search(r"\bpid\s*=\s*(\d+)", output)
+    return int(match.group(1)) if match else None
+
+
+def _parse_print_last_exit_code(output: str) -> Optional[int]:
+    match = re.search(r"last exit code\s*=\s*(-?\d+)", output)
+    return int(match.group(1)) if match else None

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -35,6 +37,7 @@ def parse_session_log(
     last_started_at: Optional[float] = None
     last_completed_at: Optional[float] = None
     latest_message = ""
+    title = ""
     entries: list[str] = []
     last_entry_value: Optional[str] = None
     tokens_total = 0
@@ -63,6 +66,7 @@ def parse_session_log(
                 source = _normalize_source(payload.get("source"))
                 originator = str(payload.get("originator") or "")
                 cwd = str(payload.get("cwd") or "")
+                title = _clean_title(payload.get("title")) or title
                 last_activity_at = _max_timestamp(last_activity_at, record_ts, _coerce_timestamp(payload.get("timestamp")))
                 continue
 
@@ -77,6 +81,11 @@ def parse_session_log(
                         started_at = record_ts
                     last_started_at = _max_timestamp(last_started_at, started_at, record_ts)
                     last_activity_at = _max_timestamp(last_activity_at, started_at)
+                    continue
+                if event_type == "user_message":
+                    if not title:
+                        title = _clean_title(payload.get("message"))
+                    last_activity_at = _max_timestamp(last_activity_at, record_ts)
                     continue
                 if event_type == "task_complete":
                     completed_at = _coerce_timestamp(payload.get("completed_at"))
@@ -117,6 +126,8 @@ def parse_session_log(
             message = _extract_response_message(payload)
             if not message:
                 continue
+            if role == "user" and not title:
+                title = _clean_title(message)
             latest_message = clip_text_by_width(message, _LATEST_MESSAGE_LIMIT, ellipsis="...")
             entries, last_entry_value = _append_entry(entries, last_entry_value, message)
             last_activity_at = _max_timestamp(last_activity_at, record_ts)
@@ -161,6 +172,7 @@ def parse_session_log(
         tokens_session=tokens_session,
         control_capability="readonly",
         pending_prompt=None,
+        title=title,
     )
 
 
@@ -172,11 +184,15 @@ class SessionLogWatcher:
         max_files: int = 200,
         active_window_seconds: float = 300.0,
         completed_window_seconds: float = 120.0,
+        title_db_path: Optional[Path] = None,
+        title_index_path: Optional[Path] = None,
     ) -> None:
         self.root = root
         self.max_files = max(0, int(max_files))
         self.active_window_seconds = active_window_seconds
         self.completed_window_seconds = completed_window_seconds
+        self.title_db_path = title_db_path or Path.home() / ".codex" / "state_5.sqlite"
+        self.title_index_path = title_index_path or Path.home() / ".codex" / "session_index.jsonl"
 
     def poll(self, now: Optional[float] = None) -> list[SessionRecord]:
         now_ts = time.time() if now is None else float(now)
@@ -195,7 +211,17 @@ class SessionLogWatcher:
             if existing is None or session.last_activity_at >= existing.last_activity_at:
                 records_by_id[session.session_id] = session
 
-        return sorted(records_by_id.values(), key=lambda session: session.last_activity_at, reverse=True)
+        sessions = list(records_by_id.values())
+        session_ids = [session.session_id for session in sessions]
+        titles = _load_thread_titles(self.title_db_path, session_ids)
+        titles.update(_load_thread_index_titles(self.title_index_path, session_ids))
+        if titles:
+            sessions = [
+                replace(session, title=titles.get(session.session_id, session.title) or session.title)
+                for session in sessions
+            ]
+
+        return sorted(sessions, key=lambda session: session.last_activity_at, reverse=True)
 
     def _candidate_paths(self, *, now: Optional[float] = None) -> list[Path]:
         if self.max_files <= 0:
@@ -256,6 +282,67 @@ def _normalize_source(value: Any) -> str:
         keys = sorted(str(key) for key in value.keys())
         return ",".join(keys)
     return ""
+
+
+def _load_thread_titles(path: Path, session_ids: list[str]) -> dict[str, str]:
+    wanted = [session_id for session_id in dict.fromkeys(session_ids) if session_id]
+    if not wanted or not path.exists():
+        return {}
+    placeholders = ",".join("?" for _ in wanted)
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=0.2)
+    except sqlite3.Error:
+        return {}
+    try:
+        rows = conn.execute(
+            f"SELECT id, title, first_user_message FROM threads WHERE id IN ({placeholders})",
+            wanted,
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+
+    titles: dict[str, str] = {}
+    for session_id, title, first_user_message in rows:
+        cleaned = _clean_title(title) or _clean_title(first_user_message)
+        if cleaned:
+            titles[str(session_id)] = cleaned
+    return titles
+
+
+def _load_thread_index_titles(path: Path, session_ids: list[str]) -> dict[str, str]:
+    wanted = set(session_id for session_id in session_ids if session_id)
+    if not wanted or not path.exists():
+        return {}
+    titles: dict[str, str] = {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                try:
+                    record = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                session_id = str(record.get("id") or "")
+                if session_id not in wanted:
+                    continue
+                title = _clean_title(record.get("thread_name"))
+                if title:
+                    titles[session_id] = title
+    except OSError:
+        return {}
+    return titles
+
+
+def _clean_title(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.strip().split())
+    if not text or _is_noise_message(text):
+        return ""
+    if text.startswith("You are a helpful assistant.") and "Generate a concise UI title" in text:
+        return ""
+    return clip_text_by_width(text, 36, ellipsis="...")
 
 
 def _clean_message(value: Any) -> str:

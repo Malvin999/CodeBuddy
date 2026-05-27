@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Deque, Optional
 
@@ -21,6 +21,7 @@ from .runtime import socket_path as runtime_socket_path
 from .runtime import state_path as runtime_state_path
 from .state_store import BridgeStateStore, PersistedState
 from .text_width import clip_text_by_width
+from .usage import CodexUsageClient
 
 _SUMMARY_LIMIT = 44
 _ENTRY_LIMIT = 160
@@ -153,6 +154,7 @@ class ManagedSessionRuntime:
             tokens_session=self.tokens_session,
             control_capability="managed",
             pending_prompt=self.pending_prompt,
+            title=self.workdir.name,
         )
 
 
@@ -164,9 +166,11 @@ class BuddyAgent:
         socket_path: Optional[Path] = None,
         clock: Optional[Callable[[], float]] = None,
         readonly_poll_interval: float = 2.0,
+        usage_poll_interval: float = 60.0,
         keepalive_interval: float = 10.0,
         reconnect_interval: float = 5.0,
         watcher: Optional[Any] = None,
+        usage_client: Optional[CodexUsageClient] = None,
         ble_factory: Optional[Callable[..., BleBuddyTransport]] = None,
         managed_session_factory: Optional[Callable[..., ManagedSessionBridge]] = None,
     ) -> None:
@@ -174,6 +178,7 @@ class BuddyAgent:
         self.socket_path = socket_path or default_socket_path(state_path)
         self.clock = clock or time.time
         self.readonly_poll_interval = readonly_poll_interval
+        self.usage_poll_interval = usage_poll_interval
         self.keepalive_interval = keepalive_interval
         self.reconnect_interval = reconnect_interval
         self.store = BridgeStateStore(state_path)
@@ -181,6 +186,7 @@ class BuddyAgent:
         self._watcher = watcher or (
             SessionLogWatcher(Path.home() / ".codex" / "sessions") if SessionLogWatcher is not None else None
         )
+        self._usage_client = usage_client if usage_client is not None else CodexUsageClient()
         self._ble_factory = ble_factory or BleBuddyTransport
         self._managed_session_factory = managed_session_factory or ManagedSessionBridge
         self._managed_sessions: dict[str, ManagedSessionBridge] = {}
@@ -191,6 +197,7 @@ class BuddyAgent:
         self._stopped = asyncio.Event()
         self._ble: Optional[BleBuddyTransport] = None
         self._ble_connected = False
+        self._usage_payload: Optional[dict[str, object]] = None
         self._last_payload: Optional[dict[str, object]] = None
         self._launch_sequence = 0
 
@@ -202,6 +209,7 @@ class BuddyAgent:
         self._server = await asyncio.start_unix_server(self._handle_client, path=str(self.socket_path))
         self._tasks = [
             asyncio.create_task(self._readonly_loop()),
+            asyncio.create_task(self._usage_loop()),
             asyncio.create_task(self._ble_loop()),
             asyncio.create_task(self._keepalive_loop()),
         ]
@@ -234,7 +242,7 @@ class BuddyAgent:
         self._ble_connected = False
         if self.socket_path.exists():
             self.socket_path.unlink()
-        snapshot = self.catalog.snapshot(now=self.clock())
+        snapshot = self._snapshot()
         self._persist(snapshot, agent_running=False)
 
     async def launch(self, workdir: Path) -> dict[str, object]:
@@ -261,7 +269,7 @@ class BuddyAgent:
 
     def status_payload(self) -> dict[str, object]:
         current = self.store.load()
-        snapshot = self.catalog.snapshot(now=self.clock())
+        snapshot = self._snapshot()
         return {
             "agent_running": True,
             "buddy_connected": self._ble_connected,
@@ -311,6 +319,19 @@ class BuddyAgent:
                 self.catalog.replace_readonly(readonly)
                 await self._publish_state()
             await asyncio.sleep(self.readonly_poll_interval)
+
+    async def _usage_loop(self) -> None:
+        while not self._stopped.is_set():
+            try:
+                usage = await asyncio.to_thread(self._usage_client.fetch)
+            except Exception:
+                usage = None
+            if usage is not None:
+                payload = usage.as_ble_payload(now=self.clock())
+                if payload is not None and payload != self._usage_payload:
+                    self._usage_payload = payload
+                    await self._publish_state(force=True)
+            await asyncio.sleep(self.usage_poll_interval)
 
     async def _ble_loop(self) -> None:
         while not self._stopped.is_set():
@@ -387,7 +408,7 @@ class BuddyAgent:
         await bridge.respond_to_device_approval(request_id, decision)
 
     async def _publish_state(self, *, force: bool = False) -> None:
-        snapshot = self.catalog.snapshot(now=self.clock())
+        snapshot = self._snapshot()
         payload = snapshot.as_ble_payload()
         if force or payload != self._last_payload:
             self._last_payload = payload
@@ -399,6 +420,12 @@ class BuddyAgent:
                     with contextlib.suppress(Exception):
                         await self._ble.disconnect()
         self._persist(snapshot, agent_running=True)
+
+    def _snapshot(self) -> Any:
+        snapshot = self.catalog.snapshot(now=self.clock())
+        if self._usage_payload is not None:
+            return replace(snapshot, usage=dict(self._usage_payload))
+        return snapshot
 
     def _persist(self, snapshot: Any, *, agent_running: bool) -> None:
         current = self.store.load()
