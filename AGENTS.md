@@ -9,7 +9,7 @@
 - StickS3 首页为横屏 `240x135`：
   - 左侧上半部分展示 PET。
   - 左侧下半部分展示 `HH:MM`、秒数、星期+日期；USB 供电时显示 `charging`。
-  - 右侧最多展示 3 个 session，状态为 `work`、`approve`、`done`，用小图标区分。
+  - 右侧最多展示 3 个 session，状态为 `working`、`approve`、`done`，用小图标区分。
   - 没有可见 session 时，右侧展示 Codex Usage。
   - 右侧面板右上角显示 StickS3 当前电量百分比，不再显示 `LIVE/IDLE`。
 - B 键在首页有 session 时会隐藏当前可见的 `done` session；`running/waiting` 不隐藏。

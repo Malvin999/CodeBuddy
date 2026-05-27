@@ -1021,7 +1021,7 @@ static uint16_t sessionColor(const char* state) {
 }
 
 static const char* sessionLabel(const char* state) {
-  if (strcmp(state, "running") == 0) return "work";
+  if (strcmp(state, "running") == 0) return "working";
   if (strcmp(state, "waiting") == 0) return "approve";
   return "done";
 }
