@@ -1319,6 +1319,9 @@ void loop() {
     }
   }
   handleSessionTransitionAlerts(promptAlertPlayed);
+  if (screenOff && visibleSessionCount() > 0) {
+    wake();
+  }
 
   bool inPrompt = false;
 
@@ -1568,8 +1571,9 @@ void loop() {
 
   // millis() not the cached `now`: wake() runs after `now` is captured,
   // so now - lastInteractMs underflows when a button is held → flicker.
-  // No auto-off on USB power — clock face wants to stay visible while charging.
-  if (!screenOff && !inPrompt && !_onUsb
+  // Keep live sessions visible. Once the session list ages out and the home
+  // surface falls back to usage, non-USB power can auto-off again.
+  if (!screenOff && !inPrompt && !_onUsb && visibleSessionCount() == 0
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
     compatSetDisplayEnabled(false);
     screenOff = true;
