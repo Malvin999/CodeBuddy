@@ -183,9 +183,10 @@ struct Settings {
   bool led;
   bool hud;
   uint8_t clockRot;  // landscape UI rotation: 0=BtnA-side down, 1=USB-side down
+  uint8_t brightness;  // 0..4
 };
 
-static Settings _settings = { true, true, false, true, true, 0 };
+static Settings _settings = { true, true, false, true, true, 0, 0 };
 
 inline void settingsLoad() {
   _prefs.begin("buddy", true);
@@ -195,7 +196,9 @@ inline void settingsLoad() {
   _settings.led   = _prefs.getBool("s_led", true);
   _settings.hud      = _prefs.getBool("s_hud", true);
   _settings.clockRot = _prefs.getUChar("s_crot", 0);
+  _settings.brightness = _prefs.getUChar("s_brt", 0);
   if (_settings.clockRot > 1) _settings.clockRot = 0;
+  if (_settings.brightness > 4) _settings.brightness = 0;
   _prefs.end();
 }
 
@@ -207,6 +210,7 @@ inline void settingsSave() {
   _prefs.putBool("s_led", _settings.led);
   _prefs.putBool("s_hud", _settings.hud);
   _prefs.putUChar("s_crot", _settings.clockRot);
+  _prefs.putUChar("s_brt", _settings.brightness);
   _prefs.end();
 }
 

@@ -57,7 +57,7 @@ unsigned long t = 0;
 // Menu
 bool    menuOpen    = false;
 uint8_t menuSel     = 0;
-uint8_t brightLevel = 4;           // 0..4 → ScreenBreath 20..100
+uint8_t brightLevel = 0;           // 0..4 -> ScreenBreath 20..100
 bool    btnALong    = false;
 
 enum DisplayMode { DISP_NORMAL, DISP_PET, DISP_INFO, DISP_COUNT };
@@ -206,8 +206,9 @@ static void applySetting(uint8_t idx) {
   switch (idx) {
     case 0:
       brightLevel = (brightLevel + 1) % 5;
+      s.brightness = brightLevel;
       applyBrightness();
-      return;
+      break;
     case 1: s.sound = !s.sound; break;
     case 2:
       // BT toggle is a stored preference only — BLE stays live. Turning
@@ -1233,6 +1234,8 @@ void setup() {
   lastInteractMs = millis();
   statsLoad();
   settingsLoad();
+  brightLevel = settings().brightness;
+  applyBrightness();
   M5.Lcd.setRotation(displayRotation());
   petNameLoad();
   buddyInit();

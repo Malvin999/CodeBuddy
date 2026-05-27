@@ -15,6 +15,7 @@
 - B 键在首页有 session 时会隐藏当前可见的 `done` session；`running/waiting` 不隐藏。
 - session 切到 `waiting` 或 `done` 时设备会短响提醒。`waiting` 会回到首页，`done` 不打断当前界面。
 - 只要有可见 session，非充电状态也保持亮屏；session 过期消失、右侧回到 usage 面板后，非 USB 供电 30 秒无操作熄屏。
+- 默认亮度为最暗档 `0/4`，亮度菜单调整会持久化到 NVS。
 - Codex Usage 表示“剩余额度百分比”，不是已使用百分比。不要在缺少真实 usage 数据时伪造 100%。
 
 ## 关键路径
