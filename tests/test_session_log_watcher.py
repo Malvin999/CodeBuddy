@@ -1,7 +1,7 @@
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -127,6 +127,31 @@ def test_parse_session_log_returns_running_record_with_latest_entries_and_tokens
     assert session.tokens_session == 55
     assert session.control_capability == "readonly"
     assert session.pending_prompt is None
+
+
+def test_parse_session_log_prefers_output_tokens_over_total_context_tokens(tmp_path: Path):
+    log_path = tmp_path / "sessions" / "tokens.jsonl"
+    _write_log(
+        log_path,
+        [
+            _session_meta(session_id="session-tokens"),
+            _event(1_000.0, "task_started", turn_id="turn-1", started_at=1_000.0),
+            _event(
+                1_005.0,
+                "token_count",
+                info={
+                    "total_token_usage": {"output_tokens": 321, "total_tokens": 99_999},
+                    "last_token_usage": {"output_tokens": 55, "total_tokens": 88_888},
+                },
+            ),
+        ],
+    )
+
+    session = parse_session_log(log_path, now=1_050.0)
+
+    assert session is not None
+    assert session.tokens_total == 321
+    assert session.tokens_session == 55
 
 
 def test_parse_session_log_transitions_from_completed_to_recent_then_drops(tmp_path: Path):
@@ -423,6 +448,67 @@ def test_session_log_watcher_skips_files_older_than_activity_window(tmp_path: Pa
 
     assert watcher._candidate_paths(now=5_100.0) == [fresh_path]
     assert [session.session_id for session in watcher.poll(now=5_100.0)] == ["session-fresh"]
+
+
+def test_session_log_watcher_token_totals_sum_output_tokens_for_today_and_latest_total(tmp_path: Path):
+    root = tmp_path / "logs"
+    local_tz = datetime.now().astimezone().tzinfo
+    today = datetime(2026, 5, 28, 12, 0, tzinfo=local_tz)
+    yesterday = today - timedelta(days=1)
+    first_path = root / "first.jsonl"
+    second_path = root / "second.jsonl"
+
+    _write_log(
+        first_path,
+        [
+            _session_meta(session_id="session-1"),
+            _event(
+                yesterday.timestamp(),
+                "token_count",
+                info={
+                    "total_token_usage": {"output_tokens": 3, "total_tokens": 3000},
+                    "last_token_usage": {"output_tokens": 3, "total_tokens": 3000},
+                },
+            ),
+            _event(
+                (today + timedelta(minutes=1)).timestamp(),
+                "token_count",
+                info={
+                    "total_token_usage": {"output_tokens": 10, "total_tokens": 10000},
+                    "last_token_usage": {"output_tokens": 7, "total_tokens": 7000},
+                },
+            ),
+            _event(
+                (today + timedelta(minutes=2)).timestamp(),
+                "token_count",
+                info={
+                    "total_token_usage": {"output_tokens": 15, "total_tokens": 15000},
+                    "last_token_usage": {"output_tokens": 5, "total_tokens": 5000},
+                },
+            ),
+        ],
+    )
+    _write_log(
+        second_path,
+        [
+            _session_meta(session_id="session-2"),
+            _event(
+                (today + timedelta(minutes=3)).timestamp(),
+                "token_count",
+                info={
+                    "total_token_usage": {"output_tokens": 4, "total_tokens": 4000},
+                    "last_token_usage": {"output_tokens": 4, "total_tokens": 4000},
+                },
+            ),
+        ],
+    )
+
+    watcher = SessionLogWatcher(root, token_max_files=20)
+
+    totals = watcher.token_totals(now=today.timestamp())
+
+    assert totals.today == 16
+    assert totals.total == 19
 
 
 def test_parse_session_log_normalizes_structured_source_values(tmp_path: Path):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -13,6 +13,19 @@ from .text_width import clip_text_by_width
 
 _ENTRY_LIMIT = 160
 _LATEST_MESSAGE_LIMIT = 160
+
+
+@dataclass(frozen=True)
+class TokenTotals:
+    total: int = 0
+    today: int = 0
+
+
+@dataclass(frozen=True)
+class _TokenFileSummary:
+    session_id: str
+    latest_total: int
+    daily: dict[str, int]
 
 
 def parse_session_log(
@@ -200,6 +213,7 @@ class SessionLogWatcher:
         root: Path,
         *,
         max_files: int = 200,
+        token_max_files: int = 1000,
         active_window_seconds: float = 300.0,
         completed_window_seconds: float = 120.0,
         title_db_path: Optional[Path] = None,
@@ -207,10 +221,12 @@ class SessionLogWatcher:
     ) -> None:
         self.root = root
         self.max_files = max(0, int(max_files))
+        self.token_max_files = max(0, int(token_max_files))
         self.active_window_seconds = active_window_seconds
         self.completed_window_seconds = completed_window_seconds
         self.title_db_path = title_db_path or Path.home() / ".codex" / "state_5.sqlite"
         self.title_index_path = title_index_path or Path.home() / ".codex" / "session_index.jsonl"
+        self._token_summary_cache: dict[Path, tuple[int, int, _TokenFileSummary]] = {}
 
     def poll(self, now: Optional[float] = None) -> list[SessionRecord]:
         now_ts = time.time() if now is None else float(now)
@@ -241,6 +257,22 @@ class SessionLogWatcher:
 
         return sorted(sessions, key=lambda session: session.last_activity_at, reverse=True)
 
+    def token_totals(self, now: Optional[float] = None) -> TokenTotals:
+        now_ts = time.time() if now is None else float(now)
+        today = datetime.fromtimestamp(now_ts).astimezone().date().isoformat()
+        total_by_session: dict[str, int] = {}
+        today_total = 0
+
+        for path in self._token_candidate_paths():
+            summary = self._token_file_summary(path)
+            if summary is None:
+                continue
+            session_id = summary.session_id or str(path)
+            total_by_session[session_id] = max(total_by_session.get(session_id, 0), summary.latest_total)
+            today_total += summary.daily.get(today, 0)
+
+        return TokenTotals(total=sum(total_by_session.values()), today=today_total)
+
     def _candidate_paths(self, *, now: Optional[float] = None) -> list[Path]:
         if self.max_files <= 0:
             return []
@@ -264,6 +296,78 @@ class SessionLogWatcher:
 
         candidates.sort(key=lambda item: (item[0], str(item[1])), reverse=True)
         return [path for _, path in candidates[: self.max_files]]
+
+    def _token_candidate_paths(self) -> list[Path]:
+        if self.token_max_files <= 0:
+            return []
+        if self.root.is_file():
+            return [self.root]
+        if not self.root.exists():
+            return []
+
+        candidates: list[tuple[float, Path]] = []
+        for path in self.root.rglob("*.jsonl"):
+            try:
+                mtime = float(path.stat().st_mtime)
+            except OSError:
+                continue
+            candidates.append((mtime, path))
+        candidates.sort(key=lambda item: (item[0], str(item[1])), reverse=True)
+        return [path for _, path in candidates[: self.token_max_files]]
+
+    def _token_file_summary(self, path: Path) -> Optional[_TokenFileSummary]:
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        cache_key = (int(stat.st_mtime_ns), int(stat.st_size))
+        cached = self._token_summary_cache.get(path)
+        if cached is not None and cached[0] == cache_key[0] and cached[1] == cache_key[1]:
+            return cached[2]
+
+        session_id = ""
+        latest_total = 0
+        daily: dict[str, int] = {}
+        try:
+            handle = path.open("r", encoding="utf-8")
+        except OSError:
+            return None
+
+        with handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                payload = record.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                if record.get("type") == "session_meta":
+                    payload_id = payload.get("id")
+                    if payload_id is not None:
+                        session_id = str(payload_id)
+                    continue
+                if record.get("type") != "event_msg" or payload.get("type") != "token_count":
+                    continue
+                info = payload.get("info")
+                if not isinstance(info, dict):
+                    continue
+                total_token_usage = _coerce_token_count(info.get("total_token_usage"))
+                if total_token_usage is not None:
+                    latest_total = total_token_usage
+                last_token_usage = _coerce_token_count(info.get("last_token_usage"))
+                if last_token_usage is None:
+                    continue
+                local_date = _timestamp_local_date(record.get("timestamp"))
+                if local_date:
+                    daily[local_date] = daily.get(local_date, 0) + last_token_usage
+
+        summary = _TokenFileSummary(session_id=session_id, latest_total=latest_total, daily=daily)
+        self._token_summary_cache[path] = (cache_key[0], cache_key[1], summary)
+        return summary
 
 
 def _extract_response_message(payload: dict[str, Any]) -> str:
@@ -406,7 +510,12 @@ def _is_noise_message(message: str) -> bool:
 def _coerce_token_count(value: Any) -> Optional[int]:
     if not isinstance(value, dict):
         return None
-    total = value.get("total_tokens")
+    # The StickS3 pet uses output-token progress. Codex log records also carry
+    # total_tokens, but that includes input and cached-input context and makes
+    # the on-device counters look wildly inflated compared with the proxy path.
+    total = value.get("output_tokens")
+    if total is None:
+        total = value.get("total_tokens")
     if isinstance(total, bool):
         return None
     if isinstance(total, (int, float)):
@@ -434,6 +543,13 @@ def _coerce_timestamp(value: Any) -> Optional[float]:
         return datetime.fromisoformat(text).astimezone(timezone.utc).timestamp()
     except ValueError:
         return None
+
+
+def _timestamp_local_date(value: Any) -> str:
+    timestamp = _coerce_timestamp(value)
+    if timestamp is None:
+        return ""
+    return datetime.fromtimestamp(timestamp).astimezone().date().isoformat()
 
 
 def _max_timestamp(current: Optional[float], *candidates: Optional[float]) -> Optional[float]:

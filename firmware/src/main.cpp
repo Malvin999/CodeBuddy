@@ -824,6 +824,10 @@ static void tinyHeart(int x, int y, bool filled, uint16_t col) {
 static uint8_t pctFromCap(uint32_t value, uint32_t cap);
 static void formatCompactNumber(char* out, size_t size, uint32_t value);
 
+static uint32_t displayedTotalTokens() {
+  return tama.tokensTotal > 0 ? tama.tokensTotal : stats().tokens;
+}
+
 static void drawPetStats(const Palette& p) {
   spr.fillRect(SIDE_X, 0, SIDE_W, H, p.bg);
   spr.drawFastVLine(SIDE_X, 8, H - 16, p.textDim);
@@ -881,7 +885,7 @@ static void drawPetStats(const Palette& p) {
   y += 28;
   char today[12], total[12];
   formatCompactNumber(today, sizeof(today), tama.tokensToday);
-  formatCompactNumber(total, sizeof(total), stats().tokens);
+  formatCompactNumber(total, sizeof(total), displayedTotalTokens());
 
   spr.setTextColor(p.textDim, p.bg);
   spr.setCursor(SIDE_TEXT_X, y);
@@ -1032,7 +1036,7 @@ static void drawUsagePanel() {
   } else {
     char today[12], total[12];
     formatCompactNumber(today, sizeof(today), tama.tokensToday);
-    formatCompactNumber(total, sizeof(total), stats().tokens);
+    formatCompactNumber(total, sizeof(total), displayedTotalTokens());
     snprintf(shortDetail, sizeof(shortDetail), "%s output tokens", today);
     snprintf(longDetail, sizeof(longDetail), "%s lifetime tokens", total);
   }

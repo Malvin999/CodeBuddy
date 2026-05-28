@@ -198,6 +198,7 @@ class BuddyAgent:
         self._ble: Optional[BleBuddyTransport] = None
         self._ble_connected = False
         self._usage_payload: Optional[dict[str, object]] = None
+        self._readonly_token_totals: Optional[object] = None
         self._last_payload: Optional[dict[str, object]] = None
         self._launch_sequence = 0
 
@@ -315,9 +316,15 @@ class BuddyAgent:
     async def _readonly_loop(self) -> None:
         while not self._stopped.is_set():
             if self._watcher is not None:
-                readonly = self._watcher.poll(now=self.clock())
+                now = self.clock()
+                readonly = self._watcher.poll(now=now)
                 self.catalog.replace_readonly(readonly)
                 await self._publish_state()
+                if hasattr(self._watcher, "token_totals"):
+                    token_totals = await asyncio.to_thread(self._watcher.token_totals, now=now)
+                    if token_totals != self._readonly_token_totals:
+                        self._readonly_token_totals = token_totals
+                        await self._publish_state(force=True)
             await asyncio.sleep(self.readonly_poll_interval)
 
     async def _usage_loop(self) -> None:
@@ -423,6 +430,12 @@ class BuddyAgent:
 
     def _snapshot(self) -> Any:
         snapshot = self.catalog.snapshot(now=self.clock())
+        token_totals = self._readonly_token_totals
+        if token_totals is not None:
+            total = int(getattr(token_totals, "total", 0))
+            today = int(getattr(token_totals, "today", 0))
+            if total > 0 or today > 0:
+                snapshot = replace(snapshot, tokens=total, tokens_today=today)
         if self._usage_payload is not None:
             return replace(snapshot, usage=dict(self._usage_payload))
         return snapshot
