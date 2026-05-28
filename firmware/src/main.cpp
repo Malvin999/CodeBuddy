@@ -821,56 +821,78 @@ static void tinyHeart(int x, int y, bool filled, uint16_t col) {
   }
 }
 
+static uint8_t pctFromCap(uint32_t value, uint32_t cap);
+static void formatCompactNumber(char* out, size_t size, uint32_t value);
+
 static void drawPetStats(const Palette& p) {
   spr.fillRect(SIDE_X, 0, SIDE_W, H, p.bg);
   spr.drawFastVLine(SIDE_X, 8, H - 16, p.textDim);
   spr.setTextSize(1);
   int y = 24;
 
+  spr.fillRoundRect(SIDE_TEXT_X, y - 5, 44, 16, 3, p.body);
+  spr.setTextColor(p.bg, p.body);
+  spr.setCursor(SIDE_TEXT_X + 6, y - 1);
+  spr.printf("Lv %u", stats().level);
+
   spr.setTextColor(p.textDim, p.bg);
-  spr.setCursor(SIDE_TEXT_X, y - 2); spr.print("mood");
+  spr.setCursor(SIDE_TEXT_X + 54, y - 1);
+  spr.print("energy");
+  uint8_t en = statsEnergyTier();
+  uint16_t enCol = (en >= 4) ? 0x07FF : (en >= 2) ? 0xFFE0 : HOT;
+  for (int i = 0; i < 5; i++) {
+    int px = SIDE_TEXT_X + 99 + i * 8;
+    if (i < en) spr.fillRect(px, y - 3, 6, 8, enCol);
+    else spr.drawRect(px, y - 3, 6, 8, p.textDim);
+  }
+
+  y += 23;
+  spr.setTextColor(p.textDim, p.bg);
+  spr.setCursor(SIDE_TEXT_X, y - 2);
+  spr.print("mood");
   uint8_t mood = statsMoodTier();
   uint16_t moodCol = (mood >= 3) ? RED : (mood >= 2) ? HOT : p.textDim;
-  for (int i = 0; i < 4; i++) tinyHeart(SIDE_TEXT_X + 48 + i * 14, y + 2, i < mood, moodCol);
+  for (int i = 0; i < 4; i++) tinyHeart(SIDE_TEXT_X + 52 + i * 16, y + 2, i < mood, moodCol);
 
-  y += 17;
-  spr.setCursor(SIDE_TEXT_X, y - 2); spr.print("fed");
+  y += 19;
+  spr.setCursor(SIDE_TEXT_X, y - 2);
+  spr.print("fed");
   uint8_t fed = statsFedProgress();
   for (int i = 0; i < 10; i++) {
-    int px = SIDE_TEXT_X + 34 + i * 8;
+    int px = SIDE_TEXT_X + 45 + i * 8;
     if (i < fed) spr.fillCircle(px, y + 1, 2, p.body);
     else spr.drawCircle(px, y + 1, 2, p.textDim);
   }
 
-  y += 17;
-  spr.setCursor(SIDE_TEXT_X, y - 2); spr.print("energy");
-  uint8_t en = statsEnergyTier();
-  uint16_t enCol = (en >= 4) ? 0x07FF : (en >= 2) ? 0xFFE0 : HOT;
-  for (int i = 0; i < 5; i++) {
-    int px = SIDE_TEXT_X + 54 + i * 11;
-    if (i < en) spr.fillRect(px, y - 2, 9, 6, enCol);
-    else spr.drawRect(px, y - 2, 9, 6, p.textDim);
-  }
+  y += 20;
+  uint8_t levelPct = pctFromCap(stats().tokens % TOKENS_PER_LEVEL, TOKENS_PER_LEVEL);
+  spr.setTextColor(p.textDim, p.bg);
+  spr.setCursor(SIDE_TEXT_X, y - 2);
+  spr.print("next level");
+  spr.setTextColor(p.text, p.bg);
+  spr.setCursor(W - 26, y - 2);
+  spr.printf("%u%%", levelPct);
+  int barY = y + 11;
+  int barW = SIDE_W - SIDE_PAD * 2;
+  spr.drawRect(SIDE_TEXT_X, barY, barW, 8, p.textDim);
+  int fill = (int)((uint32_t)(barW - 2) * levelPct / 100);
+  if (fill > 0) spr.fillRect(SIDE_TEXT_X + 1, barY + 1, fill, 6, p.body);
 
-  y += 18;
-  spr.fillRoundRect(SIDE_TEXT_X, y - 2, 42, 14, 3, p.body);
-  spr.setTextColor(p.bg, p.body);
-  spr.setCursor(SIDE_TEXT_X + 5, y + 1); spr.printf("Lv %u", stats().level);
+  y += 28;
+  char today[12], total[12];
+  formatCompactNumber(today, sizeof(today), tama.tokensToday);
+  formatCompactNumber(total, sizeof(total), stats().tokens);
 
-  y += 18;
   spr.setTextColor(p.textDim, p.bg);
   spr.setCursor(SIDE_TEXT_X, y);
-  spr.printf("approved %u", stats().approvals);
+  spr.print("today");
+  spr.setCursor(SIDE_TEXT_X + 70, y);
+  spr.print("total");
+  spr.setTextColor(p.text, p.bg);
   spr.setCursor(SIDE_TEXT_X, y + 10);
-  spr.printf("denied   %u", stats().denials);
-  auto tokFmt = [&](const char* label, uint32_t v, int yPx) {
-    spr.setCursor(SIDE_TEXT_X, yPx);
-    if (v >= 1000000)   spr.printf("%s%lu.%luM", label, v/1000000, (v/100000)%10);
-    else if (v >= 1000) spr.printf("%s%lu.%luK", label, v/1000, (v/100)%10);
-    else                spr.printf("%s%lu", label, v);
-  };
-  tokFmt("tokens   ", stats().tokens, y + 20);
-  tokFmt("today    ", tama.tokensToday, y + 30);
+  spr.print(today);
+  spr.setCursor(SIDE_TEXT_X + 70, y + 10);
+  spr.print(total);
 }
 
 static void drawPetHowTo(const Palette& p) {
@@ -884,8 +906,8 @@ static void drawPetHowTo(const Palette& p) {
   auto gap = [&]() { y += 4; };
 
   ln(p.body,    "MOOD");
-  ln(p.textDim, " approve fast = up");
-  ln(p.textDim, " deny lots = down"); gap();
+  ln(p.textDim, " quick attention");
+  ln(p.textDim, " keeps hearts up"); gap();
 
   ln(p.body,    "FED");
   ln(p.textDim, " 50K tokens =");

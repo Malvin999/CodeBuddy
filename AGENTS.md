@@ -17,6 +17,7 @@
 - 插电时保持桌面屏常亮；不插电时启用省电模式：usage 5 秒熄屏，working/done session 10 秒熄屏，approve/waiting session 15 秒熄屏，新的 session 或状态变化会唤醒屏幕。
 - 默认亮度为最暗档 `0/4`，亮度菜单调整会持久化到 NVS。
 - Codex Usage 表示“剩余额度百分比”，不是已使用百分比。不要在缺少真实 usage 数据时伪造 100%。
+- `DISP_PET` 统计页不展示 `approved/denied`，重点展示 level、energy、mood、fed、next level、today/total tokens。
 
 ## 关键路径
 
