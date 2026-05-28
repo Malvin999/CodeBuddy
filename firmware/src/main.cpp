@@ -77,6 +77,8 @@ struct SessionStateMemo {
 };
 SessionStateMemo lastSessionStates[3] = {};
 bool     lastSessionStatesReady = false;
+char     lastVisibleSessionSignature[96] = "";
+bool     visibleSessionSignatureReady = false;
 uint32_t lastInteractMs = 0;
 bool     dimmed = false;
 bool     screenOff = false;
@@ -104,7 +106,9 @@ static void nextPet() {
   if (buddyMode) buddyInvalidate();
 }
 uint32_t wakeTransitionUntil = 0;
-const uint32_t SCREEN_OFF_MS = 30000;
+const uint32_t BATTERY_USAGE_SCREEN_OFF_MS = 5000;
+const uint32_t BATTERY_SESSION_SCREEN_OFF_MS = 10000;
+const uint32_t BATTERY_WAITING_SCREEN_OFF_MS = 15000;
 
 bool     napping = false;
 uint32_t napStartMs = 0;
@@ -1141,6 +1145,46 @@ static uint8_t visibleSessionCount() {
   return n;
 }
 
+static bool visibleWaitingSession() {
+  for (uint8_t i = 0; i < tama.sessionCount && i < 3; ++i) {
+    if (sessionVisible(i) && sessionIsWaiting(tama.sessions[i].state)) return true;
+  }
+  return false;
+}
+
+static uint32_t batteryScreenOffMs() {
+  if (visibleWaitingSession()) return BATTERY_WAITING_SCREEN_OFF_MS;
+  if (visibleSessionCount() > 0) return BATTERY_SESSION_SCREEN_OFF_MS;
+  return BATTERY_USAGE_SCREEN_OFF_MS;
+}
+
+static bool visibleSessionSignatureChanged() {
+  char current[96] = "";
+  size_t used = 0;
+  for (uint8_t i = 0; i < tama.sessionCount && i < 3 && used < sizeof(current); ++i) {
+    if (!sessionVisible(i)) continue;
+    int wrote = snprintf(
+      current + used,
+      sizeof(current) - used,
+      "%s:%s;",
+      tama.sessions[i].id,
+      tama.sessions[i].state
+    );
+    if (wrote < 0) break;
+    used += (size_t)wrote;
+    if (used >= sizeof(current)) {
+      current[sizeof(current) - 1] = 0;
+      break;
+    }
+  }
+
+  bool changed = !visibleSessionSignatureReady || strcmp(current, lastVisibleSessionSignature) != 0;
+  strncpy(lastVisibleSessionSignature, current, sizeof(lastVisibleSessionSignature) - 1);
+  lastVisibleSessionSignature[sizeof(lastVisibleSessionSignature) - 1] = 0;
+  visibleSessionSignatureReady = true;
+  return changed && current[0];
+}
+
 static bool dismissVisibleDoneSessions() {
   bool dismissed = false;
   for (uint8_t i = 0; i < tama.sessionCount && i < 3; ++i) {
@@ -1333,7 +1377,7 @@ void loop() {
     }
   }
   handleSessionTransitionAlerts(promptAlertPlayed);
-  if (screenOff && visibleSessionCount() > 0) {
+  if (visibleSessionSignatureChanged()) {
     wake();
   }
 
@@ -1585,10 +1629,10 @@ void loop() {
 
   // millis() not the cached `now`: wake() runs after `now` is captured,
   // so now - lastInteractMs underflows when a button is held → flicker.
-  // Keep live sessions visible. Once the session list ages out and the home
-  // surface falls back to usage, non-USB power can auto-off again.
-  if (!screenOff && !inPrompt && !_onUsb && visibleSessionCount() == 0
-      && millis() - lastInteractMs > SCREEN_OFF_MS) {
+  // Battery mode is intentionally brief: session changes wake the screen,
+  // then usage/session/waiting each get a short viewing window before sleep.
+  if (!screenOff && !inPrompt && !_onUsb
+      && millis() - lastInteractMs > batteryScreenOffMs()) {
     compatSetDisplayEnabled(false);
     screenOff = true;
   }
