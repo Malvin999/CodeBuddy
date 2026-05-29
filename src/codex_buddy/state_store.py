@@ -27,6 +27,8 @@ class PersistedState:
     shim_dir: str = ""
     shell_integrated: bool = False
     service_installed: bool = False
+    token_seen_totals: dict[str, int] = field(default_factory=dict)
+    token_ledger_initialized: bool = False
 
 
 class BridgeStateStore:
@@ -58,6 +60,8 @@ class BridgeStateStore:
                 shim_dir=state.shim_dir,
                 shell_integrated=state.shell_integrated,
                 service_installed=state.service_installed,
+                token_seen_totals=state.token_seen_totals,
+                token_ledger_initialized=state.token_ledger_initialized,
             )
         return state
 

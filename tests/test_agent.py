@@ -1,8 +1,9 @@
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 
 from codex_buddy.agent import BuddyAgent, ManagedSessionRuntime
-from codex_buddy.catalog import SessionPrompt
+from codex_buddy.catalog import SessionPrompt, SessionRecord
 from codex_buddy.events import ApprovalRequest, TurnState
 from codex_buddy.proxy import ApprovalRequestResolved
 from codex_buddy.state_store import BridgeStateStore, PersistedState
@@ -27,6 +28,22 @@ class _FakeBridge:
 
     async def respond_to_device_approval(self, request_id: str, decision: str) -> None:
         self.approvals.append((request_id, decision))
+
+
+def _record(session_id: str, tokens_total: int, tokens_session: int = 0) -> SessionRecord:
+    return SessionRecord(
+        session_id=session_id,
+        source="vscode",
+        originator="Codex Desktop",
+        cwd="/tmp/project",
+        state="running",
+        last_activity_at=100.0,
+        latest_message="Working",
+        entries=["Working"],
+        tokens_total=tokens_total,
+        tokens_session=tokens_session,
+        control_capability="readonly",
+    )
 
 
 def test_agent_launch_registers_managed_session_and_routes_device_approval(tmp_path):
@@ -74,6 +91,54 @@ def test_agent_launch_registers_managed_session_and_routes_device_approval(tmp_p
     assert status["snapshot"]["prompt"]["id"] == "req-1"
     assert status["sessions"][0]["control_capability"] == "managed"
     assert status["sessions"][0]["session_id"] == "thr-1"
+
+
+def test_agent_token_ledger_seeds_existing_sessions_then_accumulates_deltas(tmp_path):
+    state_path = tmp_path / "state.json"
+    BridgeStateStore(state_path).save(
+        PersistedState(
+            tokens_today=10,
+            tokens_date="2026-05-28",
+            tokens_total=100,
+            token_ledger_initialized=False,
+        )
+    )
+    now = datetime(2026, 5, 28, 12, 0, tzinfo=timezone.utc).timestamp()
+    agent = BuddyAgent(state_path, watcher=None, clock=lambda: now)
+
+    agent._observe_session_tokens([_record("session-1", 50)])
+
+    assert agent._tokens_today == 10
+    assert agent._tokens_total == 100
+    assert agent._token_seen_totals == {"session-1": 50}
+
+    agent._observe_session_tokens([_record("session-1", 70), _record("session-2", 5)])
+
+    assert agent._tokens_today == 35
+    assert agent._tokens_total == 125
+    assert agent._token_seen_totals == {"session-1": 70, "session-2": 5}
+
+
+def test_agent_token_ledger_resets_today_at_local_midnight(tmp_path):
+    state_path = tmp_path / "state.json"
+    BridgeStateStore(state_path).save(
+        PersistedState(
+            tokens_today=25,
+            tokens_date="2026-05-28",
+            tokens_total=100,
+            token_seen_totals={"session-1": 50},
+            token_ledger_initialized=True,
+        )
+    )
+    current_time = [datetime(2026, 5, 28, 12, 0, tzinfo=timezone.utc).timestamp()]
+    agent = BuddyAgent(state_path, watcher=None, clock=lambda: current_time[0])
+
+    current_time[0] = datetime(2026, 5, 29, 12, 0, tzinfo=timezone.utc).timestamp()
+    agent._observe_session_tokens([_record("session-1", 60)])
+
+    assert agent._tokens_today == 10
+    assert agent._tokens_total == 110
+    assert agent._tokens_date == "2026-05-29"
 
 
 def test_agent_launch_passes_saved_real_codex_path_to_managed_bridge(tmp_path):

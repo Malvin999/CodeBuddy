@@ -8,6 +8,7 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Deque, Optional
 
@@ -198,9 +199,18 @@ class BuddyAgent:
         self._ble: Optional[BleBuddyTransport] = None
         self._ble_connected = False
         self._usage_payload: Optional[dict[str, object]] = None
-        self._readonly_token_totals: Optional[object] = None
         self._last_payload: Optional[dict[str, object]] = None
         self._launch_sequence = 0
+        current = self.store.load(now=datetime.fromtimestamp(self.clock()).astimezone())
+        self._tokens_today = max(0, current.tokens_today)
+        self._tokens_total = max(0, current.tokens_total)
+        self._tokens_date = current.tokens_date or self._today()
+        self._token_seen_totals = {
+            str(session_id): max(0, int(total))
+            for session_id, total in current.token_seen_totals.items()
+            if isinstance(total, (int, float)) and not isinstance(total, bool)
+        }
+        self._token_ledger_initialized = bool(current.token_ledger_initialized)
 
     async def run(self) -> None:
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -250,7 +260,7 @@ class BuddyAgent:
         self._launch_sequence += 1
         control_id = "managed-{}-{}".format(int(self.clock() * 1000), self._launch_sequence)
         runtime = ManagedSessionRuntime(control_id=control_id, workdir=workdir)
-        current = self.store.load()
+        current = self.store.load(now=datetime.fromtimestamp(self.clock()).astimezone())
         bridge = self._managed_session_factory(
             workdir=workdir,
             codex_path=current.real_codex_path or "codex",
@@ -320,11 +330,6 @@ class BuddyAgent:
                 readonly = self._watcher.poll(now=now)
                 self.catalog.replace_readonly(readonly)
                 await self._publish_state()
-                if hasattr(self._watcher, "token_totals"):
-                    token_totals = await asyncio.to_thread(self._watcher.token_totals, now=now)
-                    if token_totals != self._readonly_token_totals:
-                        self._readonly_token_totals = token_totals
-                        await self._publish_state(force=True)
             await asyncio.sleep(self.readonly_poll_interval)
 
     async def _usage_loop(self) -> None:
@@ -415,6 +420,7 @@ class BuddyAgent:
         await bridge.respond_to_device_approval(request_id, decision)
 
     async def _publish_state(self, *, force: bool = False) -> None:
+        self._observe_session_tokens(self.catalog.sessions(now=self.clock()))
         snapshot = self._snapshot()
         payload = snapshot.as_ble_payload()
         if force or payload != self._last_payload:
@@ -430,27 +436,59 @@ class BuddyAgent:
 
     def _snapshot(self) -> Any:
         snapshot = self.catalog.snapshot(now=self.clock())
-        token_totals = self._readonly_token_totals
-        if token_totals is not None:
-            total = int(getattr(token_totals, "total", 0))
-            today = int(getattr(token_totals, "today", 0))
-            if total > 0 or today > 0:
-                snapshot = replace(snapshot, tokens=total, tokens_today=today)
+        snapshot = replace(snapshot, tokens=self._tokens_total, tokens_today=self._tokens_today)
         if self._usage_payload is not None:
             return replace(snapshot, usage=dict(self._usage_payload))
         return snapshot
 
+    def _today(self) -> str:
+        return datetime.fromtimestamp(self.clock()).astimezone().date().isoformat()
+
+    def _sync_token_day(self) -> None:
+        today = self._today()
+        if self._tokens_date != today:
+            self._tokens_date = today
+            self._tokens_today = 0
+
+    def _observe_session_tokens(self, sessions: list[SessionRecord]) -> None:
+        self._sync_token_day()
+        if not self._token_ledger_initialized:
+            for session in sessions:
+                current = max(0, int(session.tokens_total))
+                if current:
+                    self._token_seen_totals[session.session_id] = current
+            self._token_ledger_initialized = True
+            return
+
+        delta_total = 0
+        for session in sessions:
+            current = max(0, int(session.tokens_total))
+            previous = self._token_seen_totals.get(session.session_id)
+            if previous is None:
+                delta = current
+                self._token_seen_totals[session.session_id] = current
+            elif current > previous:
+                delta = current - previous
+                self._token_seen_totals[session.session_id] = current
+            else:
+                delta = 0
+            delta_total += delta
+
+        if delta_total:
+            self._tokens_total += delta_total
+            self._tokens_today += delta_total
+
     def _persist(self, snapshot: Any, *, agent_running: bool) -> None:
-        current = self.store.load()
+        current = self.store.load(now=datetime.fromtimestamp(self.clock()).astimezone())
         sessions = [session.as_dict() for session in self.catalog.sessions(now=self.clock())]
         active_thread_id = sessions[0]["session_id"] if sessions else None
         self.store.save(
             PersistedState(
                 paired_device_id=current.paired_device_id,
                 paired_device_name=current.paired_device_name,
-                tokens_today=snapshot.tokens_today,
-                tokens_date=current.tokens_date,
-                tokens_total=snapshot.tokens,
+                tokens_today=self._tokens_today,
+                tokens_date=self._tokens_date,
+                tokens_total=self._tokens_total,
                 active_thread_id=active_thread_id,
                 buddy_connected=self._ble_connected,
                 last_msg=snapshot.msg,
@@ -464,6 +502,8 @@ class BuddyAgent:
                 shim_dir=current.shim_dir,
                 shell_integrated=current.shell_integrated,
                 service_installed=current.service_installed,
+                token_seen_totals=self._token_seen_totals,
+                token_ledger_initialized=self._token_ledger_initialized,
             )
         )
 

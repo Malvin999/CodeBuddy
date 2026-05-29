@@ -222,6 +222,8 @@ class BridgeController:
                 shim_dir=current.shim_dir,
                 shell_integrated=current.shell_integrated,
                 service_installed=current.service_installed,
+                token_seen_totals=current.token_seen_totals,
+                token_ledger_initialized=current.token_ledger_initialized,
             )
         )
 

@@ -62,6 +62,8 @@ def test_state_store_preserves_setup_metadata_across_midnight_reset(tmp_path):
             shim_dir="/Users/tester/.code-buddy/bin",
             shell_integrated=True,
             service_installed=True,
+            token_seen_totals={"session-1": 42},
+            token_ledger_initialized=True,
         )
     )
 
@@ -76,3 +78,5 @@ def test_state_store_preserves_setup_metadata_across_midnight_reset(tmp_path):
     assert loaded.shim_dir == "/Users/tester/.code-buddy/bin"
     assert loaded.shell_integrated is True
     assert loaded.service_installed is True
+    assert loaded.token_seen_totals == {"session-1": 42}
+    assert loaded.token_ledger_initialized is True
