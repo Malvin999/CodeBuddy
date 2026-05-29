@@ -824,8 +824,8 @@ static void tinyHeart(int x, int y, bool filled, uint16_t col) {
 static uint8_t pctFromCap(uint32_t value, uint32_t cap);
 static void formatCompactNumber(char* out, size_t size, uint32_t value);
 
-static uint32_t displayedTotalTokens() {
-  return tama.tokensTotal > 0 ? tama.tokensTotal : stats().tokens;
+static uint32_t displayedActiveTokens() {
+  return tama.tokensActive;
 }
 
 static void drawPetStats(const Palette& p) {
@@ -883,20 +883,20 @@ static void drawPetStats(const Palette& p) {
   if (fill > 0) spr.fillRect(SIDE_TEXT_X + 1, barY + 1, fill, 6, p.body);
 
   y += 28;
-  char today[12], total[12];
+  char today[12], active[12];
   formatCompactNumber(today, sizeof(today), tama.tokensToday);
-  formatCompactNumber(total, sizeof(total), displayedTotalTokens());
+  formatCompactNumber(active, sizeof(active), displayedActiveTokens());
 
   spr.setTextColor(p.textDim, p.bg);
   spr.setCursor(SIDE_TEXT_X, y);
   spr.print("today");
   spr.setCursor(SIDE_TEXT_X + 70, y);
-  spr.print("total");
+  spr.print("active");
   spr.setTextColor(p.text, p.bg);
   spr.setCursor(SIDE_TEXT_X, y + 10);
   spr.print(today);
   spr.setCursor(SIDE_TEXT_X + 70, y + 10);
-  spr.print(total);
+  spr.print(active);
 }
 
 static void drawPetHowTo(const Palette& p) {
@@ -1024,9 +1024,9 @@ static void drawUsagePanel() {
   uint8_t shortPct = tama.usageQuota ? tama.usageShortPct : pctFromCap(tama.tokensToday, 100000);
   uint8_t longPct = tama.usageQuota
       ? tama.usageLongPct
-      : pctFromCap(stats().tokens % TOKENS_PER_LEVEL, TOKENS_PER_LEVEL);
+      : pctFromCap(displayedActiveTokens(), 100000);
   const char* shortWindow = (tama.usageQuota && tama.usageShortWindow[0]) ? tama.usageShortWindow : "today";
-  const char* longWindow = (tama.usageQuota && tama.usageLongWindow[0]) ? tama.usageLongWindow : "level";
+  const char* longWindow = (tama.usageQuota && tama.usageLongWindow[0]) ? tama.usageLongWindow : "active";
 
   char shortDetail[32];
   char longDetail[32];
@@ -1034,11 +1034,11 @@ static void drawUsagePanel() {
     snprintf(shortDetail, sizeof(shortDetail), "resets in %s", tama.usageShortReset[0] ? tama.usageShortReset : "-");
     snprintf(longDetail, sizeof(longDetail), "resets in %s", tama.usageLongReset[0] ? tama.usageLongReset : "-");
   } else {
-    char today[12], total[12];
+    char today[12], active[12];
     formatCompactNumber(today, sizeof(today), tama.tokensToday);
-    formatCompactNumber(total, sizeof(total), displayedTotalTokens());
+    formatCompactNumber(active, sizeof(active), displayedActiveTokens());
     snprintf(shortDetail, sizeof(shortDetail), "%s output tokens", today);
-    snprintf(longDetail, sizeof(longDetail), "%s lifetime tokens", total);
+    snprintf(longDetail, sizeof(longDetail), "%s active tokens", active);
   }
 
   drawUsageRow(p, 24, shortPct, shortWindow, shortDetail, USAGE_BLUE);

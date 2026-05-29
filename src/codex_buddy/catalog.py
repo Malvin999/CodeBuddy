@@ -153,6 +153,7 @@ class SessionCatalog:
             entries=entries,
             tokens=sum(max(0, session.tokens_total) for session in visible),
             tokens_today=sum(max(0, session.tokens_session) for session in visible),
+            tokens_active=sum(max(0, session.tokens_session) for session in visible),
             prompt=prompt,
             sessions=_compact_sessions(visible[:3]),
         )

@@ -32,6 +32,7 @@ class BuddySnapshot:
     tokens: int
     tokens_today: int
     prompt: Optional[dict[str, str]]
+    tokens_active: int = 0
     usage: Optional[dict[str, Any]] = None
     sessions: Optional[list[dict[str, str]]] = None
 
@@ -44,6 +45,7 @@ class BuddySnapshot:
             "entries": self.entries,
             "tokens": self.tokens,
             "tokens_today": self.tokens_today,
+            "tokens_active": self.tokens_active,
             "sessions": list(self.sessions or []),
         }
         if self.usage is not None:
@@ -162,5 +164,6 @@ class BuddyStateReducer:
             entries=list(self._entries),
             tokens=self._tokens,
             tokens_today=self._tokens_today,
+            tokens_active=self._tokens_today,
             prompt=prompt,
         )

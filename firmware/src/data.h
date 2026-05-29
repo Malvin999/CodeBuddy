@@ -18,6 +18,7 @@ struct TamaState {
   bool     recentlyCompleted;
   uint32_t tokensTotal;
   uint32_t tokensToday;
+  uint32_t tokensActive;
   bool     usageLive;
   bool     usageQuota;
   uint8_t  usageShortPct;
@@ -128,6 +129,7 @@ static void _applyJson(const char* line, TamaState* out) {
     statsOnBridgeTokens(bridgeTokens);
   }
   out->tokensToday = doc["tokens_today"] | out->tokensToday;
+  out->tokensActive = doc["tokens_active"] | out->tokensActive;
   JsonObject usage = doc["usage"];
   if (!usage.isNull()) {
     int shortPct = usage["short_pct"] | 0;
@@ -233,7 +235,7 @@ inline void dataPoll(TamaState* out) {
     if (now >= _demoNext) { _demoIdx = (_demoIdx + 1) % 5; _demoNext = now + 8000; }
     const _Fake& s = _FAKES[_demoIdx];
     out->sessionsTotal=s.t; out->sessionsRunning=s.r; out->sessionsWaiting=s.w;
-    out->recentlyCompleted=s.c; out->tokensTotal=s.tok; out->tokensToday=s.tok; out->lastUpdated=now;
+    out->recentlyCompleted=s.c; out->tokensTotal=s.tok; out->tokensToday=s.tok; out->tokensActive=s.tok; out->lastUpdated=now;
     out->connected = true;
     snprintf(out->msg, sizeof(out->msg), "demo: %s", s.n);
     return;

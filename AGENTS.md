@@ -17,8 +17,8 @@
 - 插电时保持桌面屏常亮；不插电时启用省电模式：usage 5 秒熄屏，working/done session 10 秒熄屏，approve/waiting session 15 秒熄屏，新的 session 或状态变化会唤醒屏幕。
 - 默认亮度为最暗档 `0/4`，亮度菜单调整会持久化到 NVS。
 - Codex Usage 表示“剩余额度百分比”，不是已使用百分比。不要在缺少真实 usage 数据时伪造 100%。
-- `DISP_PET` 统计页不展示 `approved/denied`，重点展示 level、energy、mood、fed、next level、today/total tokens。
-- PET 里的 token 口径使用 Codex `output_tokens`。不要用包含 input/cache 的 `total_tokens` 填充 today/total，否则数值会被上下文 token 放大。
+- `DISP_PET` 统计页不展示 `approved/denied`，重点展示 level、energy、mood、fed、next level、today/active tokens。
+- PET 里的 token 口径使用 Codex `output_tokens`。不要用包含 input/cache 的 `total_tokens` 填充 today/active，否则数值会被上下文 token 放大。
 
 ## 关键路径
 

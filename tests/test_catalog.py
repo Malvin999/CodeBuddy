@@ -71,6 +71,7 @@ def test_single_managed_prompt_is_exported_while_readonly_running_session_still_
     assert snapshot.entries == ["approve: rm -rf /tmp/foo"]
     assert snapshot.tokens == 75
     assert snapshot.tokens_today == 20
+    assert snapshot.tokens_active == 20
     assert snapshot.prompt == {
         "id": "req-1",
         "tool": "Bash",
