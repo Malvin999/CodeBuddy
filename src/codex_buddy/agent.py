@@ -16,6 +16,7 @@ from .ble_transport import BleBuddyTransport
 from .bridge import ManagedSessionBridge
 from .catalog import SessionCatalog, SessionPrompt, SessionRecord
 from .events import ApprovalRequest, AgentOutput, TokenUsage, TurnState
+from .presence import PresenceMonitor
 from .proxy import ApprovalRequestResolved
 from .runtime import logs_dir as runtime_logs_dir
 from .runtime import socket_path as runtime_socket_path
@@ -172,6 +173,7 @@ class BuddyAgent:
         reconnect_interval: float = 5.0,
         watcher: Optional[Any] = None,
         usage_client: Optional[CodexUsageClient] = None,
+        presence_monitor: Optional[PresenceMonitor] = None,
         ble_factory: Optional[Callable[..., BleBuddyTransport]] = None,
         managed_session_factory: Optional[Callable[..., ManagedSessionBridge]] = None,
     ) -> None:
@@ -188,6 +190,7 @@ class BuddyAgent:
             SessionLogWatcher(Path.home() / ".codex" / "sessions") if SessionLogWatcher is not None else None
         )
         self._usage_client = usage_client if usage_client is not None else CodexUsageClient()
+        self._presence_monitor = presence_monitor if presence_monitor is not None else PresenceMonitor(clock=self.clock)
         self._ble_factory = ble_factory or BleBuddyTransport
         self._managed_session_factory = managed_session_factory or ManagedSessionBridge
         self._managed_sessions: dict[str, ManagedSessionBridge] = {}
@@ -437,6 +440,7 @@ class BuddyAgent:
     def _snapshot(self) -> Any:
         snapshot = self.catalog.snapshot(now=self.clock())
         snapshot = replace(snapshot, tokens=self._tokens_total, tokens_today=self._tokens_today)
+        snapshot = replace(snapshot, presence=self._presence_monitor.snapshot())
         if self._usage_payload is not None:
             return replace(snapshot, usage=dict(self._usage_payload))
         return snapshot

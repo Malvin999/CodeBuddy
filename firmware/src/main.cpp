@@ -467,6 +467,14 @@ static void drawLeftClockPanel() {
   char hm[6]; clockFormatHm(hm, sizeof(hm), _clkTm.Hours, _clkTm.Minutes);
   char ss[4]; clockFormatSeconds(ss, sizeof(ss), _clkTm.Seconds);
   char wdl[16]; clockFormatWeekDateLine(wdl, sizeof(wdl), clockDow(), _clkDt.Month, _clkDt.Date);
+  char status[28] = "";
+  if (_onUsb && tama.presenceState[0]) {
+    snprintf(status, sizeof(status), "chg %s", tama.presenceState);
+  } else if (_onUsb) {
+    snprintf(status, sizeof(status), "charging");
+  } else if (tama.presenceState[0]) {
+    snprintf(status, sizeof(status), "%s", tama.presenceState);
+  }
 
   useDefaultTextFont(spr);
   spr.fillRect(0, LEFT_CLOCK_Y, SIDE_X, H - LEFT_CLOCK_Y, p.bg);
@@ -482,10 +490,14 @@ static void drawLeftClockPanel() {
   spr.print(ss);
   spr.setCursor(8, LEFT_CLOCK_Y + 33);
   spr.print(wdl);
-  if (_onUsb) {
-    spr.setTextColor(p.body, p.bg);
+  if (status[0]) {
+    uint16_t color = p.body;
+    if (strcmp(tama.presenceState, "idle") == 0) color = 0xFFE0;
+    else if (strcmp(tama.presenceState, "away") == 0 || strcmp(tama.presenceState, "off") == 0) color = p.textDim;
+    else if (strcmp(tama.presenceState, "unknown") == 0) color = HOT;
+    spr.setTextColor(color, p.bg);
     spr.setCursor(8, LEFT_CLOCK_Y + 47);
-    spr.print("charging");
+    spr.print(status);
   }
 }
 

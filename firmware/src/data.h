@@ -27,6 +27,9 @@ struct TamaState {
   char     usageLongWindow[8];
   char     usageShortReset[24];
   char     usageLongReset[24];
+  char     presenceState[12];
+  uint32_t presenceIdleSec;
+  bool     presenceWork;
   uint32_t lastUpdated;
   char     msg[128];
   bool     connected;
@@ -154,6 +157,14 @@ static void _applyJson(const char* line, TamaState* out) {
     out->usageLongWindow[sizeof(out->usageLongWindow) - 1] = 0;
     out->usageShortReset[sizeof(out->usageShortReset) - 1] = 0;
     out->usageLongReset[sizeof(out->usageLongReset) - 1] = 0;
+  }
+  JsonObject presence = doc["presence"];
+  if (!presence.isNull()) {
+    const char* state = presence["state"] | "";
+    strncpy(out->presenceState, state, sizeof(out->presenceState) - 1);
+    out->presenceState[sizeof(out->presenceState) - 1] = 0;
+    out->presenceIdleSec = presence["idle_sec"] | out->presenceIdleSec;
+    out->presenceWork = presence["work"] | out->presenceWork;
   }
   JsonArray sessions = doc["sessions"];
   if (!sessions.isNull()) {

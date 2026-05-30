@@ -162,3 +162,22 @@ def test_ble_payload_includes_usage_when_present():
 
     assert payload["usage"]["short_pct"] == 13
     assert payload["usage"]["long_window"] == "7d"
+
+
+def test_ble_payload_includes_presence_when_present():
+    reducer = BuddyStateReducer()
+    snapshot = reducer.snapshot()
+    payload = snapshot.__class__(
+        total=snapshot.total,
+        running=snapshot.running,
+        waiting=snapshot.waiting,
+        msg=snapshot.msg,
+        entries=snapshot.entries,
+        tokens=snapshot.tokens,
+        tokens_today=snapshot.tokens_today,
+        tokens_active=snapshot.tokens_active,
+        prompt=snapshot.prompt,
+        presence={"state": "idle", "idle_sec": 600, "work": True},
+    ).as_ble_payload()
+
+    assert payload["presence"] == {"state": "idle", "idle_sec": 600, "work": True}

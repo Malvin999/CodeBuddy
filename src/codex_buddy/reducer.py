@@ -34,6 +34,7 @@ class BuddySnapshot:
     prompt: Optional[dict[str, str]]
     tokens_active: int = 0
     usage: Optional[dict[str, Any]] = None
+    presence: Optional[dict[str, Any]] = None
     sessions: Optional[list[dict[str, str]]] = None
 
     def as_ble_payload(self) -> dict:
@@ -50,6 +51,8 @@ class BuddySnapshot:
         }
         if self.usage is not None:
             payload["usage"] = dict(self.usage)
+        if self.presence is not None:
+            payload["presence"] = dict(self.presence)
         if self.prompt is not None:
             payload["prompt"] = dict(self.prompt)
 

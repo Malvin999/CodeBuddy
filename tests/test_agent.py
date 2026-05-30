@@ -30,6 +30,11 @@ class _FakeBridge:
         self.approvals.append((request_id, decision))
 
 
+class _FakePresence:
+    def snapshot(self):
+        return {"state": "working", "idle_sec": 0, "work": True}
+
+
 def _record(session_id: str, tokens_total: int, tokens_session: int = 0) -> SessionRecord:
     return SessionRecord(
         session_id=session_id,
@@ -65,6 +70,7 @@ def test_agent_launch_registers_managed_session_and_routes_device_approval(tmp_p
             watcher=None,
             managed_session_factory=factory,
             clock=lambda: 120.0,
+            presence_monitor=_FakePresence(),
         )
         response = await agent.launch(Path("/tmp/demo"))
         bridge = created[0]
@@ -170,6 +176,7 @@ def test_agent_launch_passes_saved_real_codex_path_to_managed_bridge(tmp_path):
             watcher=None,
             managed_session_factory=factory,
             clock=lambda: 120.0,
+            presence_monitor=_FakePresence(),
         )
         await agent.launch(Path("/tmp/demo"))
 
@@ -244,6 +251,7 @@ def test_agent_ble_loop_recreates_transport_after_connect_failure(tmp_path):
             watcher=None,
             reconnect_interval=0.01,
             ble_factory=_FlakyBle,
+            presence_monitor=_FakePresence(),
         )
         task = asyncio.create_task(agent._ble_loop())
         await asyncio.sleep(0.08)

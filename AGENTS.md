@@ -20,6 +20,7 @@
 - `DISP_PET` 统计页不展示 `approved/denied`，重点展示 level、energy、mood、fed、next level、today/active tokens。
 - PET 里的 token 口径使用 Codex `output_tokens`。不要用包含 input/cache 的 `total_tokens` 填充 today/active，否则数值会被上下文 token 放大。
 - host 端 token 计数使用本地 ledger：记录每个 session 已见 output token 总量，只把新增 delta 累加到 `tokens_today/tokens_total`；首次启动/升级只建立基线，避免重复计算历史日志。
+- host 端 presence 使用 macOS HID idle + 工作时段。默认工作日 `09:30-18:30`；`idle>=10min` 且工作时段为 `idle`，`idle>=10min` 且非工作时段为 `away`，低于 10min 时分别为 `working/off`。
 
 ## 关键路径
 
